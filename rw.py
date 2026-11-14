@@ -664,7 +664,8 @@ Research notes:
 {text}
 
 Find the sentence in the notes that answers THIS question directly: for "why", the reason or cause; for "how", the
-mechanism or steps; for "what", what it is. These are NOT answers: background facts about the topic, its history,
+mechanism or steps; for "what", what it is; for a story or topic title (e.g. "The rise and fall of X"), the central
+events it names. These are NOT answers: background facts about the topic, its history,
 saying it has been studied or debated, or saying the answer is unknown.
 Example: for "Why do cats purr?", "Cats are small carnivores kept as pets" is not an answer; "Purring may help cats
 calm themselves and heal" is.
@@ -675,7 +676,15 @@ IS_ANSWER_PROMPT = """Question: "{question}"
 Sentence: "{quote}"
 
 Does this sentence give an answer to the question: a reason, cause, purpose, mechanism or definition, even a partial
-one? Background facts, history, or saying it is studied, debated or unknown do not count.
+one? If it is a story or topic title rather than a question, a sentence stating the central events it names counts.
+Background facts, history, or saying it is studied, debated or unknown do not count.
+Reply as JSON: {{"answers": true or false}}"""
+
+IS_ABOUT_PROMPT = """Video title: "{question}"
+Sentence: "{quote}"
+
+Does this sentence state one of the main events or facts that the title is about (in any words)? A sentence that is
+only background, or only says something is studied, debated or unknown, does not count.
 Reply as JSON: {{"answers": true or false}}"""
 
 SAME_PROMPT = """Expected answer: "{answer}"
@@ -712,7 +721,8 @@ def answers(question, quote, text):
     """True if `quote` really comes from `text` and, judged on its own, answers the question (local model)."""
     if len(quote.split()) < 4 or "?" in quote or not in_text(quote, text):
         return False
-    return str(llm(IS_ANSWER_PROMPT.format(question=question, quote=quote), 0.1, local=True).get("answers")).lower() == "true"
+    prompt = IS_ANSWER_PROMPT if QUESTION_WORDS.match(question.strip()) else IS_ABOUT_PROMPT  # a story or topic title
+    return str(llm(prompt.format(question=question, quote=quote), 0.1, local=True).get("answers")).lower() == "true"
 
 
 def in_text(quote, text):
@@ -2489,9 +2499,20 @@ def make(con, pageid, auto=False):
             a = research(row["ref"])
             title, desc, text, pageimage, prompt = a["title"], a["description"], a["text"], None, "question"
             answer = find_answer(title, text)
-            if not answer and not a["credit"].startswith("Researched from the Wikipedia"):  # web research missed it: try Wikipedia
-                print("  the web research has no clear answer; trying Wikipedia")
-                a = research_wikipedia(row["ref"])
+            tried = [a["credit"]]
+            for step, again in (("reading the web ourselves", research_web), ("trying Wikipedia", research_wikipedia)):
+                if answer or (step.startswith("reading") and BRAND.get("research_from", "web") != "web"):
+                    continue
+                if any(c.startswith("Researched from the Wikipedia") for c in tried) or (again is research_web and
+                                                                                      any(c.startswith("Researched from: ") for c in tried)):
+                    continue  # that source already came up empty
+                print(f"  the research so far has no clear answer; {step}")
+                try:
+                    a = again(row["ref"])
+                except (SystemExit, Exception) as e:
+                    print(f"  ({e})")
+                    continue
+                tried.append(a["credit"])
                 text = a["text"]
                 answer = find_answer(title, text)
             if not answer:  # don't make a video that circles the topic without answering
