@@ -184,7 +184,7 @@ def switch_workspace(body):
     threading.Timer(0.3, lambda: os.execv(sys.executable, again)).start()  # after this request has been answered
 
 
-NOISE = re.compile(r"Redirects are currently not supported|warn\(|HF_TOKEN|torch/|WeightNorm|dropout option")
+NOISE = re.compile(r"Redirects are currently not supported|warn\(|HF_TOKEN|torch/|WeightNorm|dropout option|MallocStackLogging")
 job = {"proc": None, "cmd": "", "lines": [], "code": None}
 lock = threading.Lock()
 
@@ -198,6 +198,7 @@ def start(cmd):
             raise RuntimeError("a command is already running")
         proc = subprocess.Popen([sys.executable, "-W", "ignore", "-u", str(rw.ROOT / "rw.py"), *args],
                                 cwd=rw.ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                env=os.environ | {"RW_STUDIO": "1"},  # someone is watching: e.g. show pictures as they're drawn
                                 start_new_session=True)  # its own process group, so Stop reaches the voice, ffmpeg and download helpers too
         job.update(proc=proc, cmd="rw " + cmd, lines=[f"$ rw {cmd}"], code=None)
 
@@ -533,6 +534,9 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, {"results": fn(qs["q"])})
             except Exception as e:
                 return self.send(502, {"error": f"{qs['source']} search failed: {e}"})
+        m = re.fullmatch(r"/drawing/(img_[0-9a-f]{10})/(seed_\d+_step\d+of\d+\.png)", path)  # pictures being drawn, step by step
+        if m and (rw.DRAWING / m[1] / m[2]).is_file():
+            return self.send_file(rw.DRAWING / m[1] / m[2], "image/png")
         m = re.fullmatch(r"/work/(\d+)/([\w.\-]+\.(jpg|png|m4a))", path)  # episode images and sounds (for the editor)
         if m and (rw.WORK / m[1] / m[2]).is_file():
             return self.send_file(rw.WORK / m[1] / m[2], {"png": "image/png", "jpg": "image/jpeg", "m4a": "audio/mp4"}[m[3]])

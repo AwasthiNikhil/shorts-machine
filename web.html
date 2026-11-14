@@ -114,6 +114,9 @@ aside { border-left: 1px solid var(--line); display: flex; flex-direction: colum
 .term-head .btn:first-of-type { margin-left: auto; }
 #jobLabel { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }  /* long commands never push Clear/Stop away */
 .term-head .btn { flex: none; }
+.out .pic { display: flex; gap: 10px; align-items: end; margin: 4px 0 6px 14px; }
+.out .pic img { width: 132px; height: 132px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); }
+.out .pic span { color: var(--muted); font-size: 11px; }
 pre.out { flex: 1; margin: 0; padding: 14px 18px; overflow: auto; font: 12.5px/1.55 var(--mono); color: #C9D1D9; white-space: pre-wrap; word-break: break-word; }
 .out .cmd { color: var(--accent); }
 .out .err { color: var(--bad); }
@@ -934,6 +937,20 @@ const quote = s => "'" + s.replace(/'/g, "'\\''") + "'";
 
 function termLine(text, cls) {
   const out = $("#out"), atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  const pic = text.match(/^\s*@@picture (\S+) (\d+)\/(\d+) (\/drawing\/\S+)$/);
+  if (pic) {  // a picture being drawn: one thumbnail per picture, sharpening as each step arrives
+    let box = out.querySelector(`[data-pic="${CSS.escape(pic[1])}"]`);
+    if (!box) {
+      box = document.createElement("div"); box.className = "pic"; box.dataset.pic = pic[1];
+      box.innerHTML = `<img alt="Picture being drawn"><span></span>`;
+      box.querySelector("img").onerror = () => box.remove();  // previews are cleared on the next drawing run
+      out.appendChild(box);
+    }
+    box.querySelector("img").src = pic[4];
+    box.querySelector("span").textContent = pic[2] === pic[3] ? "drawn" : `drawing… step ${pic[2]} of ${pic[3]}`;
+    if (atBottom) out.scrollTop = out.scrollHeight;
+    return;
+  }
   const el = document.createElement("div");
   el.textContent = text;
   el.className = cls || (text.startsWith("$ ") ? "cmd" : /error|failed|traceback|exit [1-9]/i.test(text) ? "err" : /done:|uploaded:|exit 0|selftest ok/.test(text) ? "good" : "");

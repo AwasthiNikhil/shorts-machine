@@ -1587,13 +1587,16 @@ def draw_visuals(title, script, dest, limit=8):
     scenes = [str(x).strip() for x in llm(DRAW_PROMPT.format(title=title, sentences="\n".join(
         f"{k + 1}. {x}" for k, x in enumerate(sents))), 0.4).get("scenes") or []]
     style, out = BRAND.get("picture_style") or DRAW_STYLE, []
+    import shutil
+    shutil.rmtree(DRAWING, ignore_errors=True)  # last run's step previews
     for k, scene in enumerate(scenes[:len(sents)]):
         if not scene:
             continue
         path = dest / f"img_{hashlib.sha1(f'{scene}{style}'.encode()).hexdigest()[:10]}.png"
         print(f"  sentence {k + 1}: drawing {scene[:90]!r}", flush=True)
         if not path.exists():
-            generate_image(f"{scene}. {style}", path)
+            generate_image(f"{scene}. {style}", path,  # step previews cost ~17 s a picture: only when the studio is watching
+                           preview=path.stem if os.environ.get("RW_STUDIO") else None)
         out.append(dict(source="ai", url="ai:" + path.stem, name=scene[:150], page="", artist="FLUX.1 schnell",
                         license="AI-generated", path=str(path), sentence=k, query=scene))
     if len(out) < 2:
@@ -2681,13 +2684,39 @@ IMAGE_BIN = ROOT / ".venv-image" / "bin"
 IMAGE_READY = ROOT / "data" / "image_model_ready"  # written after the first picture, so a half-finished download doesn't count
 
 
-def generate_image(prompt, dest, size=768, show=False):
+DRAWING = WS / "data" / "drawing"  # each picture's in-progress steps, shown in the studio console while it's drawn
+
+
+def generate_image(prompt, dest, size=768, show=False, preview=None):
+    """Draw a picture with the model on this Mac. With preview=<name>, the model saves the picture after each of its
+    steps and a console line points at each one, so the studio shows it sharpening (one thumbnail per picture)."""
     import subprocess
-    r = subprocess.run([str(IMAGE_BIN / "mflux-generate"), "--model", IMAGE_MODEL, "--base-model", "schnell", "--steps", "4",
-                        "--width", str(size), "--height", str(size), "--low-ram", "--prompt", prompt, "--output", str(dest)],
-                       capture_output=not show, text=True)
-    if r.returncode or not Path(dest).exists():
-        raise RuntimeError("the picture model failed: " + ((r.stderr or "").strip().splitlines() or ["see the console"])[-1][:200])
+    cmd = [str(IMAGE_BIN / "mflux-generate"), "--model", IMAGE_MODEL, "--base-model", "schnell", "--steps", "4",
+           "--width", str(size), "--height", str(size), "--low-ram", "--prompt", prompt, "--output", str(dest)]
+    steps_dir = DRAWING / preview if preview else None
+    if steps_dir:
+        cmd += ["--stepwise-image-output-dir", str(steps_dir)]
+    import tempfile
+    log = None if show else tempfile.TemporaryFile("w+")  # a file, not a pipe: a pipe nobody reads can fill up and stall the model
+    p = subprocess.Popen(cmd, stdout=None if show else subprocess.DEVNULL, stderr=log, text=True)
+    shown = set()
+    while True:
+        done = p.poll() is not None
+        for f in sorted(steps_dir.glob("*_step*of*.png")) if steps_dir and steps_dir.exists() else []:
+            m = re.search(r"_step(\d+)of(\d+)\.png$", f.name)
+            if m and int(m[1]) > 0 and f.name not in shown:  # step 0 is plain noise
+                shown.add(f.name)
+                print(f"@@picture {preview} {m[1]}/{m[2]} /drawing/{preview}/{f.name}", flush=True)
+        if done:
+            break
+        time.sleep(0.5)
+    err = ""
+    if log:
+        log.seek(0)
+        err = log.read()
+        log.close()
+    if p.returncode or not Path(dest).exists():
+        raise RuntimeError("the picture model failed: " + ((err or "").strip().splitlines() or ["see the console"])[-1][:200])
     return dest
 
 
