@@ -51,20 +51,45 @@ if (ROOT / "library").is_dir() and not MEDIA.exists():  # it was library/ (video
     MEDIA.mkdir()
     (ROOT / "library").rename(LIBRARY)
 API = "https://en.wikipedia.org/w/api.php"
-W, H, FPS = 1080, 1920, 30  # a Short; a long video is 1920×1080 (set_shape)
+FPS = 30
 
 
 def set_shape(long):
-    """Draw what follows as a long video (16:9) or a Short (9:16). A video's shape is its own (meta "shape"), not
-    its channel's: YouTube calls a vertical video of up to 3 minutes a Short and anything else a regular video."""
-    global W, H
-    W, H = (1920, 1080) if long else (1080, 1920)
+    """Lay out what follows as a long video (16:9) or a Short (9:16). A video's shape is its own (meta "shape"); the
+    channel only has a default. YouTube calls a vertical video of up to 3 minutes a Short, anything else a regular video.
+    W, H: the frame. PX, PY, PW, PH: the picture panel. TX, TW: the column for text beside or under it. BAR: the
+    progress bar (x, y, width). CD: a countdown's bar (x0, y, x1) and the y of its number."""
+    global W, H, PX, PY, PW, PH, TX, TW, BAR, CD
+    if long:  # the picture on the left, words in a column on the right
+        W, H, PX, PY, PW, PH, TX, TW = 1920, 1080, 60, 190, 900, 820, 1020, 840
+        BAR, CD = (60, 1040, 1800), (TX, PY + PH - 40, TX + TW, PY + PH - 170)
+    else:  # words at the top, the picture in the middle, captions under it
+        W, H, PX, PY, PW, PH, TX, TW = 1080, 1920, 40, 440, 1000, 1000, 60, 960
+        BAR, CD = (40, 1826, 1000), (60, 1580, 1020, 1710)
+
+
+def default_shape():
+    return BRAND.get("shape") or ("long" if BRAND.get("video_type") == "essay" else "short")
+
+
+set_shape(default_shape() == "long")
+
+
+def Y(y):
+    """A y position from the 1920-tall layout, for the frame being drawn (centred title cards)."""
+    return round(y * H / 1920)
+
+
+def S(size):
+    """A text size from the 1920-tall layout: smaller on a 1080-tall frame, which also has wider lines."""
+    return round(size * (0.8 if W > H else 1))
 
 
 def max_len(m=None):
-    """How long a video may run: the channel's long-video length for one shaped "long", else its usual length."""
-    return BRAND.get("long_seconds", 600) if (m or {}).get("shape") == "long" else BRAND["max_seconds"]
-PX, PY, PW, PH = 40, 440, 1000, 1000  # image panel
+    """How long a video may run: the channel's long-video length for a long one, else its usual length.
+    m: a video's meta; none = the shape being drawn now."""
+    long = (m.get("shape") == "long") if m else W > H
+    return BRAND.get("long_seconds", 600) if long else BRAND["max_seconds"]
 
 
 # ---------- http / db ----------
@@ -764,7 +789,8 @@ def ensure_answered(s, question, answer, text):
             raise RuntimeError(f"the script still doesn't answer the question; the research says: {answer[:150]}")
         print("  script doesn't answer the question; rewriting it around the answer")
         r = llm(ANSWER_FIX_PROMPT.format(question=question, answer=answer, text=text[:12000], script=s["script"]))
-        if 85 <= len(str(r.get("script", "")).split()) <= 128:
+        lo, hi = script_words()
+        if lo <= len(str(r.get("script", "")).split()) <= hi:
             s = {**s, **{k: v for k, v in r.items() if v and k in ("title", "script")}}
             s["title"] = s["title"][:70]
 
@@ -1162,24 +1188,38 @@ def add_question(con, question, force=False):
     return pid
 
 
+def script_words():
+    """(fewest, most) words for a script: a Short's 85-128, or what fills a long video (about 2.5 words a second)."""
+    if W < H:
+        return 85, 128
+    target = max_len() * 0.9 * 2.5
+    return int(target * 0.8), int(target * 1.1)
+
+
+LONG_NOTE = """LENGTH: this is a long video, not a Short. Ignore any length given above: write {lo} to {hi} words, as an
+explainer that takes its time: a hook, then the story or explanation in order with every detail the notes give, then
+a closing thought. Still plain spoken English with short sentences."""
+
+
 def write_script(title, text, prompt="script", check=True, answer=""):
-    s = {}
+    s, (lo, hi) = {}, script_words()
+    notes = text[:12000 if hi < 200 else 40000]
     for _ in range(6):
         n = len(str(s.get("script", "")).split())
         if n < 40:  # nothing usable yet: fresh draft
-            s = llm(prompt_for(prompt, title=title, text=text[:12000], answer=answer))
+            s = llm(prompt_for(prompt, title=title, text=notes, answer=answer) + ("\n\n" + LONG_NOTE.format(lo=lo, hi=hi) if hi > 200 else ""))
         else:  # revise the draft we have; far more reliable than redrafting blind
-            action = ("Cut the least important sentences and tighten the rest." if n > 128 else
-                      "Add one or two more facts from the article." if n < 85 else "Keep the length.")
-            r = llm(REVISE_PROMPT.format(n=n, action=action, text=text[:12000], script=s["script"],
+            action = ("Cut the least important sentences and tighten the rest." if n > hi else
+                      f"Add more facts from the article, to about {(lo + hi) // 2} words." if n < lo else "Keep the length.")
+            r = llm(REVISE_PROMPT.format(n=n, action=action, text=notes, script=s["script"],
                                          tags=json.dumps(s.get("tags", []))))
             s = {**s, **{k: v for k, v in r.items() if v}}
         n = len(str(s.get("script", "")).split())
-        if 85 <= n <= 128 and 0 < len(str(s.get("title", ""))) <= 70:
+        if lo <= n <= hi and 0 < len(str(s.get("title", ""))) <= 70:
             s["tags"] = [str(t) for t in s.get("tags", [])][:8]
-            c = llm(CHECK_PROMPT.format(text=text[:12000], script=s["script"]), 0.1) if check else {}
+            c = llm(CHECK_PROMPT.format(text=notes, script=s["script"]), 0.1) if check else {}
             fixed = str(c.get("script", ""))
-            if c.get("errors") and 85 <= len(fixed.split()) <= 128:
+            if c.get("errors") and lo <= len(fixed.split()) <= hi:
                 print("  fact-check fixed: " + "; ".join(map(str, c["errors"]))[:300])
                 s["script"] = fixed
             return ensure_answered(s, title, answer, text) if answer else s
@@ -1618,7 +1658,7 @@ def draw_visuals(title, script, dest, limit=8):
 
 def pick_visuals(title, script, dest, own=None, pageimage=None, limit=6, topics=()):
     if BRAND.get("pictures") == "ai" and IMAGE_READY.exists():
-        return draw_visuals(title, script, dest)
+        return draw_visuals(title, script, dest, max(8, limit))
     """One image per sentence where possible, for the concrete thing that sentence mentions, from Wikipedia entity
     images, then Commons, then Openverse. Each image remembers its sentence so it appears when that is spoken."""
     sents = split_sentences(script)
@@ -1956,8 +1996,8 @@ def tts_edge(text, dest):
 
     try:
         heard, dur = asyncio.run(say(speed))
-        if dur > BRAND["max_seconds"] and speed < 1.25:
-            speed = min(1.25, speed * dur / (BRAND["max_seconds"] - 1))
+        if dur > max_len() and speed < 1.25:
+            speed = min(1.25, speed * dur / (max_len() - 1))
             print(f"  narration {dur:.1f}s too long, re-voicing at speed {speed:.2f}")
             heard, dur = asyncio.run(say(speed))
     except Exception as e:
@@ -1979,9 +2019,9 @@ def tts_clone(text, dest):
         raise RuntimeError("voice cloning failed: " + (r.stderr.strip().splitlines() or ["unknown error"])[-1])
     audio, sr = sf.read(str(dest))
     dur = len(audio) / sr + 0.5
-    if dur > BRAND["max_seconds"]:  # too long: speed up slightly, pitch preserved
+    if dur > max_len():  # too long: speed up slightly, pitch preserved
         import imageio_ffmpeg
-        tempo = min(1.25, dur / (BRAND["max_seconds"] - 1))
+        tempo = min(1.25, dur / (max_len() - 1))
         tmp = Path(str(dest) + ".fast.wav")
         subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(dest), "-filter:a",
                         f"atempo={tempo:.3f}", str(tmp)], check=True)
@@ -2015,9 +2055,9 @@ def tts_kokoro(text, dest):
             audio += [a, gap]
             t0 += (len(a) + len(gap)) / 24000
         dur = t0 + 0.5
-        if dur <= BRAND["max_seconds"] or speed >= 1.2:
+        if dur <= max_len() or speed >= 1.2:
             break
-        speed = min(1.2, speed * dur / (BRAND["max_seconds"] - 1))
+        speed = min(1.2, speed * dur / (max_len() - 1))
         print(f"  narration {dur:.1f}s too long, re-voicing at speed {speed:.2f}")
     words = restore_written(words, written)
     audio.append(np.zeros(int(24000 * 0.5), dtype=audio[0].dtype))
@@ -2174,20 +2214,20 @@ def render(meta, words, audio_path, duration, out_path, frame_at=None):
     bg, d = backdrop()
     # title (<=3 lines) + description (<=2 lines) scaled together to fit the header block
     desc = "" if meta.get("origin") == "question" else meta.get("description") or ""  # older explainers stored a source count here
-    room, tw = PY - 24 - 190, W - 120
+    tx, ty, tw, room, most = (TX, PY, TW, 400, 5) if W > H else (60, 190, W - 120, PY - 24 - 190, 3)
     for pct in range(100, 30, -4):
         tf, df = font("display", 84 * pct // 100), font("body", max(22, 36 * pct // 100), "Medium")
         tl, dl = wrap(meta["article_title"], tf, tw), wrap(desc, df, tw)
         height = len(tl) * tf.size * 1.18 + (8 + len(dl) * df.size * 1.3 if dl else 0)
-        if len(tl) <= 3 and len(dl) <= 2 and fits(tf, tl, tw) and fits(df, dl, tw) and height <= room:
+        if len(tl) <= most and len(dl) <= 2 and fits(tf, tl, tw) and fits(df, dl, tw) and height <= room:
             break
-    y = 190 + (room - height) / 2
+    y = ty + (room - height) / 2 * (W < H)  # a Short centres it above the picture; a long video starts the column with it
     for line in tl:
-        d.text((60, y), line, font=tf, fill=C["text"])
+        d.text((tx, y), line, font=tf, fill=C["text"])
         y += tf.size * 1.18
     y += 8
     for line in dl:
-        d.text((60, y), line, font=df, fill=C["muted"])
+        d.text((tx, y), line, font=df, fill=C["muted"])
         y += df.size * 1.3
 
     mask = Image.new("L", (PW, PH), 0)
@@ -2268,7 +2308,7 @@ def render(meta, words, audio_path, duration, out_path, frame_at=None):
         return im.resize((PW, PH), Image.BILINEAR, box=(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2))
 
     groups = group_words(words)
-    cap_cache = {}
+    cap_cache, cw = {}, TW if W > H else W  # captions: under the picture, or in the column beside it
 
     def caption(gi, active):
         key = (gi, active)
@@ -2279,12 +2319,12 @@ def render(meta, words, audio_path, duration, out_path, frame_at=None):
                 cf = font("display", size)
                 sp = cf.getlength(" ")
                 total = sum(cf.getlength(w) for w in ws) + sp * (len(ws) - 1)
-                if total <= W - 100:
+                if total <= cw - 100 or size < 30:
                     break
                 size -= 6
-            im = Image.new("RGBA", (W, 200), (0, 0, 0, 0))
+            im = Image.new("RGBA", (cw, 200), (0, 0, 0, 0))
             cd = ImageDraw.Draw(im)
-            x = (W - total) / 2
+            x = (cw - total) / 2
             for j, w in enumerate(ws):
                 cd.text((x, 100), w, font=cf, anchor="lm", fill=C["accent"] if j == active else C["text"],
                         stroke_width=8, stroke_fill="#000000")
@@ -2359,9 +2399,8 @@ def render(meta, words, audio_path, duration, out_path, frame_at=None):
         if groups and groups[gi][0] <= t < groups[gi][1]:
             active = max([j for j, w in enumerate(groups[gi][2]) if w[1] <= t] or [0])
             cap = caption(gi, active)
-            im.paste(cap, (0, 1560), cap)
-        fd.rounded_rectangle((PX, 1826, PX + PW, 1836), 5, fill=C["panel"])
-        fd.rounded_rectangle((PX, 1826, PX + max(10, int(PW * t / duration)), 1836), 5, fill=C["accent"])
+            im.paste(cap, (TX, PY + PH - 260) if W > H else (0, 1560), cap)
+        progress(fd, t, duration)
         return im
 
     if frame_at is not None:
@@ -2562,11 +2601,20 @@ def make(con, pageid, auto=False):
             src = dict(url=a["url"], own=a["images"], credit=a["credit"], source_label=a["source_label"],
                        popularity=a.get("popularity"))
         print(f"[{ep:03d}] {title}" + ("" if origin == "wikipedia" else f"  [{origin}]") + "\n  writing script…")
+        if W > H and origin in ("question", "text"):  # a long video needs more notes than one round of research
+            for q in (title, f"{title} explained", f"{title} history"):
+                try:
+                    more = research_web(q, pages=4)
+                    text += "\n\n" + more["text"]
+                    src["credit"] = src.get("credit", "") + " " + more["credit"].removeprefix("Researched from: ")
+                except Exception as e:
+                    print(f"  more research on '{q}' failed ({e})")
         s = write_script(title, text, prompt, check=origin != "text", answer=answer)  # your own text is yours to vouch for
         print(f"  \"{s['title']}\"\n  fetching images…")
-        images = pick_visuals(title, s["script"], work, own=src.pop("own"), pageimage=pageimage, topics=src.get("topics", ()))
+        images = pick_visuals(title, s["script"], work, own=src.pop("own"), pageimage=pageimage, topics=src.get("topics", ()),
+                              limit=6 if W < H else 60)  # a long video: a picture for every sentence that names something
         print(f"  {len(images)} images")
-        m = dict(ep=ep, pageid=pageid, origin=origin, article_title=title, description=desc,
+        m = dict(ep=ep, pageid=pageid, origin=origin, shape="long" if W > H else "short", article_title=title, description=desc,
                  title=s["title"], script=s["script"], tags=s["tags"], images=images, **src)
         out = video_out(ep, title)
         if BRAND.get("mode") == "manual" and not auto:  # stop here: you edit script, visuals and sound, then render
@@ -2596,6 +2644,7 @@ def produce(con, m, out):
     """Voice + render a video from its meta (script, title, images) and save everything."""
     import soundfile as sf
     work = WORK / str(m["pageid"])
+    set_shape(m.get("shape") == "long")
     text = m["script"].strip() + " " + BRAND["outro_line"]
     recording = work / "voice_recorded.wav"
     if m.get("narration") == "recording" and recording.exists():  # your own voice, recorded in the studio
@@ -3080,7 +3129,7 @@ def make_clips(con, text, count=5, draft=None):
     print(f"  {len(cands)} to choose from; taking the most viewed" + (f" of the last {days} days" if days else "")
           + (f", {CLIP_PART[0]}s from the most replayed part of each long one" if videos else f" that are whole in {lo}-{hi}s")
           + ("" if any_text else " and have no text on screen")
-          + f": {count} to use (within {BRAND['max_seconds']}s together) and {CLIP_SPARES} spare")
+          + f": {count} to use (within {max_len()}s together) and {CLIP_SPARES} spare")
     clips, total, why = [], 0, {"too long or too short": 0, "too old": 0, "text on screen": 0, "couldn't be read": 0}
     quiet = type("Quiet", (), {"debug": print_nothing, "warning": print_nothing, "error": print_nothing})()
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "logger": quiet, "cachedir": False, "noplaylist": True}) as y:
@@ -3112,7 +3161,7 @@ def make_clips(con, text, count=5, draft=None):
                     f.unlink(missing_ok=True)
                 print("  dropped it: text on screen")
                 continue
-            use = sum(x["use"] for x in clips) < count and total + dur <= BRAND["max_seconds"]
+            use = sum(x["use"] for x in clips) < count and total + dur <= max_len()
             total += dur * use
             clips.append(c | json.loads(path.with_suffix(".json").read_text())
                          | {"path": str(path), "found": c["url"], "seconds": dur, "start": 0, "end": dur, "use": use,
@@ -3128,7 +3177,7 @@ def make_clips(con, text, count=5, draft=None):
     pid = sources_id(f"clips:{title}:{time.time()}")
     ep = con.execute("select coalesce(max(ep), 0) + 1 from pages").fetchone()[0]
     (WORK / str(pid)).mkdir(parents=True, exist_ok=True)
-    m = dict(ep=ep, pageid=pid, origin="clips", article_title=query or title, description="", title=title, script=title + ".",
+    m = dict(ep=ep, pageid=pid, origin="clips", shape="long" if W > H else "short", article_title=query or title, description="", title=title, script=title + ".",
              tags=[w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2][:5], images=[], url="",
              narration="none", music="none", clips=clips, yt_description="")
     (WORK / str(pid) / "meta.json").write_text(json.dumps(m, indent=2))
@@ -3150,7 +3199,7 @@ def clip_new(con, title):
     pid = sources_id(f"clips:{title}:{time.time()}")
     ep = con.execute("select coalesce(max(ep), 0) + 1 from pages").fetchone()[0]
     (WORK / str(pid)).mkdir(parents=True, exist_ok=True)
-    m = dict(ep=ep, pageid=pid, origin="clips", article_title=title, description="", title=title, script=title + ".", tags=[],
+    m = dict(ep=ep, pageid=pid, origin="clips", shape="long" if W > H else "short", article_title=title, description="", title=title, script=title + ".", tags=[],
              images=[], url="", narration="none", music="none", clips=[], audio=[], badges=False, yt_description="")
     (WORK / str(pid) / "meta.json").write_text(json.dumps(m, indent=2))
     upsert(con, pid, title=title, url="", source="curated", origin="clips", ref="", reason="clip edit", status="draft", ep=ep)
@@ -3179,6 +3228,7 @@ def clip_from_video(con, ep):
     meta = WORK / str(pid) / "meta.json"
     m = json.loads(meta.read_text())
     m.update(tags=old.get("tags") or [], base_description=old.get("yt_description") or "", stale=True,
+             shape=old.get("shape") or ("long" if old.get("origin") == "essay" else "short"),  # cut in the original's shape
              clips=[side | {"path": str(dest), "found": "", "seconds": dur, "start": 0, "end": dur, "use": True, "views": 0, "picked": True}])
     meta.write_text(json.dumps(m, indent=2))
     upsert(con, pid, ref=f"edit of EP {ep:03d}", reason=f"edit of EP {ep:03d}")
@@ -3198,7 +3248,7 @@ def text_plate(d, text, pos="bottom", size="M", x=None, y=None):
     f, ls = fit_lines(text, "display", px, W - 200, 4)
     hgt = int(len(ls) * f.size * 1.2) + 50
     wid = min(W - 120, int(max(f.getlength(l) for l in ls)) + 90)
-    cx, cy = W * (0.5 if x is None else float(x)), (TEXT_POS.get(pos, 1380) if y is None else H * float(y))
+    cx, cy = W * (0.5 if x is None else float(x)), (TEXT_POS.get(pos, 1380) * H / 1920 if y is None else H * float(y))
     left, top = int(min(max(cx - wid / 2, 20), W - 20 - wid)), int(min(max(cy - hgt / 2, 20), H - 20 - hgt))
     d.rounded_rectangle((left, top, left + wid, top + hgt), 30, fill=(*bytes.fromhex(C["bg"][1:]), 215))
     for i, l in enumerate(ls):
@@ -3274,6 +3324,7 @@ def render_clips(con, m):
     from PIL import Image, ImageDraw
     ensure_fonts()
     ff = imageio_ffmpeg.get_ffmpeg_exe()
+    set_shape(m.get("shape") == "long")
     clips = [c for c in m["clips"] if c.get("use", True) and Path(c["path"]).exists()]
     badges = m.get("badges", True)
     if len(clips) < (2 if badges else 1):
@@ -3316,7 +3367,7 @@ def render_clips(con, m):
         tmp = seg.with_suffix(".part.mp4")
         r = subprocess.run([ff, "-y", "-loglevel", "error", "-ss", str(a), "-i", c["path"], "-loop", "1", "-i", str(work / "over.png"), *sound[:-2],
                             "-filter_complex", clip_graph(fit, c.get("crop"), c.get("box")) +
-                            f"[v0][1:v]overlay=0:0:shortest=1,fps={FPS},format=yuv420p[v]",
+                            f"[v0][1:v]overlay=0:0:shortest=1,fps={FPS},format=yuv420p,setsar=1[v]",
                             "-map", "[v]", *sound[-2:], *(["-af", f"volume={vol}"] if has and vol != 1 else []),
                             "-t", str(secs), "-shortest", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
                             "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", str(tmp)], capture_output=True, text=True)
@@ -3405,7 +3456,7 @@ def quiz_count():
     """How many questions to write for the channel's longest video: each takes about 5.5 s to ask and answer plus the
     thinking time; aim a quarter over, since some fail their checks and produce_format() drops the last ones anyway
     once the video passes the length."""
-    fit = (BRAND["max_seconds"] - 14) / (5.5 + quiz_think())
+    fit = (max_len() - 14) / (5.5 + quiz_think())
     return max(5, round(fit * (1.25 if fit > 10 else 1)))
 
 
@@ -3498,26 +3549,29 @@ def render_quiz(m, scenes, audio_path, duration, out_path, frame_at=None):
         if (kind, k) in cards:
             return cards[kind, k]
         im, d = backdrop()
+        long = W > H
         if kind == "intro":
-            y = lines(d, m["title"].upper(), "display", 130, 560, 5, C["text"], centre=True)
-            lines(d, f"{n} QUESTION{'S' * (n > 1)} · {quiz_think()} SECONDS EACH", "display", 60, y + 60, 1, C["accent"], centre=True)
+            y = lines(d, m["title"].upper(), "display", S(130), Y(560), 5, C["text"], centre=True)
+            lines(d, f"{n} QUESTION{'S' * (n > 1)} · {quiz_think()} SECONDS EACH", "display", S(60), y + Y(60), 1, C["accent"], centre=True)
         elif kind == "outro":
-            y = lines(d, "HOW MANY DID YOU GET?", "display", 150, 640, 3, C["accent"], centre=True)
-            lines(d, f"Tell us your score out of {n} in the comments", "body", 48, y + 50, 2, C["muted"], centre=True)
+            y = lines(d, "HOW MANY DID YOU GET?", "display", S(150), Y(640), 3, C["accent"], centre=True)
+            lines(d, f"Tell us your score out of {n} in the comments", "body", S(48), y + Y(50), 2, C["muted"], centre=True)
         else:
             q = quiz[k]
-            d.text((60, 230), f"QUESTION {k + 1} OF {n}", font=font("display", 54), fill=C["accent"])
-            lines(d, q["question"], "display", 96, 330, 5, C["text"])
-            for j, o in enumerate(q["options"]):
-                y, right = 900 + j * 215, kind == "reveal" and o == q["answer"]
-                d.rounded_rectangle((60, y, W - 60, y + 180), 36, fill=C["accent"] if right else C["panel"])
+            d.text((60, 200 if long else 230), f"QUESTION {k + 1} OF {n}", font=font("display", 54), fill=C["accent"])
+            lines(d, q["question"], "display", 80 if long else 96, 275 if long else 330, 3 if long else 5, C["text"])
+            ow = (W - 180) // 3
+            for j, o in enumerate(q["options"]):  # a long video: three side by side; a Short: one under another
+                x0, y0, x1, y1 = (60 + j * (ow + 30), 580, 60 + j * (ow + 30) + ow, 800) if long else (60, 900 + j * 215, W - 60, 1080 + j * 215)
+                right, cy = kind == "reveal" and o == q["answer"], (y0 + y1) // 2
+                d.rounded_rectangle((x0, y0, x1, y1), 36, fill=C["accent"] if right else C["panel"])
                 ink = C["bg"] if right else C["muted"] if kind == "reveal" else C["text"]
-                d.ellipse((90, y + 40, 190, y + 140), fill=C["bg"] if right else C["accent"] if kind != "reveal" else C["bg"])
-                d.text((140, y + 92), "ABC"[j], font=font("display", 64), anchor="mm",
+                d.ellipse((x0 + 30, cy - 50, x0 + 130, cy + 50), fill=C["bg"] if right else C["accent"] if kind != "reveal" else C["bg"])
+                d.text((x0 + 80, cy + 2), "ABC"[j], font=font("display", 64), anchor="mm",
                        fill=C["accent"] if right else C["bg"] if kind != "reveal" else C["muted"])
-                f, ls = fit_lines(o, "display", 72, W - 120 - 200, 2)
+                f, ls = fit_lines(o, "display", 60 if long else 72, x1 - x0 - 195, 3 if long else 2)
                 for i, l in enumerate(ls):
-                    d.text((225, y + 92 + (i - (len(ls) - 1) / 2) * f.size * 1.15), l, font=f, fill=ink, anchor="lm")
+                    d.text((x0 + 165, cy + (i - (len(ls) - 1) / 2) * f.size * 1.15), l, font=f, fill=ink, anchor="lm")
         cards[kind, k] = im
         return im
 
@@ -3528,12 +3582,8 @@ def render_quiz(m, scenes, audio_path, duration, out_path, frame_at=None):
         d = ImageDraw.Draw(im)
         if s["kind"] in ("ask", "think"):  # the thinking time: a bar that empties and the seconds left
             left = 1 - (t - s["start"]) / quiz_think() if s["kind"] == "think" else 1
-            d.rounded_rectangle((60, 1580, W - 60, 1610), 15, fill=C["panel"])
-            d.rounded_rectangle((60, 1580, 60 + max(30, int((W - 120) * left)), 1610), 15, fill=C["accent"])
-            if s["kind"] == "think":
-                d.text((W // 2, 1710), str(math.ceil(left * quiz_think())), font=font("display", 150), fill=C["accent"], anchor="mm")
-        d.rounded_rectangle((PX, 1826, PX + PW, 1836), 5, fill=C["panel"])
-        d.rounded_rectangle((PX, 1826, PX + max(10, int(PW * t / duration)), 1836), 5, fill=C["accent"])
+            countdown(d, left, quiz_think(), (60, 850, W - 60, 960) if W > H else (60, 1580, W - 60, 1710))
+        progress(d, t, duration)
         return im
 
     if frame_at is not None:
@@ -3592,7 +3642,7 @@ def produce_format(con, m):
     key, steps_for, renderer, least = FORMATS[m["origin"]][1:]
     work, said = WORK / str(m["pageid"]), {}
     m["narration"] = BRAND.get("voice_engine") if BRAND.get("voice_engine") in ("clone", "edge") else "kokoro"
-    m.setdefault("shape", "long" if m["origin"] == "essay" else "short")  # essays made before shapes existed were long
+    m.setdefault("shape", "long" if m["origin"] == "essay" else "short")  # made before shapes existed
     set_shape(m["shape"] == "long")
     print("  voicing…")
     while True:
@@ -3620,6 +3670,7 @@ def produce_format(con, m):
 def make_format(con, m, ref, before):
     """Shared end of make_quiz / make_guess / make_onthisday: save the new video's row, voice and render it, score it."""
     print(f"[{m['ep']:03d}] {m['title']}")
+    m.setdefault("shape", "long" if W > H else "short")
     upsert(con, m["pageid"], title=m["title"], url=m.get("url", ""), source="curated", origin=m["origin"], ref=ref,
            reason=m["origin"], status="draft", ep=m["ep"])
     try:
@@ -3665,12 +3716,20 @@ def cover(path, w, h, extra=1.0):
     return im.crop((x, y, x + w, y + h))
 
 
-def text_lines(d, text, kind, size, y, max_lines, fill, centre=False, weight=None):
-    f, ls = fit_lines(text, kind, size, W - 120, max_lines, weight)
+def text_lines(d, text, kind, size, y, max_lines, fill, centre=False, weight=None, x=60, width=None):
+    width = width or W - 2 * x
+    f, ls = fit_lines(text, kind, size, width, max_lines, weight)
     for l in ls:
-        d.text((W // 2 if centre else 60, y), l, font=f, fill=fill, anchor="mt" if centre else "lt")
+        d.text((x + width // 2 if centre else x, y), l, font=f, fill=fill, anchor="mt" if centre else "lt")
         y += f.size * 1.2
     return y
+
+
+def progress(d, t, duration):
+    """The thin bar along the bottom showing how far into the video we are."""
+    x, y, w = BAR
+    d.rounded_rectangle((x, y, x + w, y + 10), 5, fill=C["panel"])
+    d.rounded_rectangle((x, y, x + max(10, int(w * t / duration)), y + 10), 5, fill=C["accent"])
 
 
 def render_scenes(scenes, draw, audio_path, duration, out_path, frame_at=None):
@@ -3679,9 +3738,7 @@ def render_scenes(scenes, draw, audio_path, duration, out_path, frame_at=None):
 
     def frame(t):
         im = draw(next((s for s in scenes if s["start"] <= t < s["end"]), scenes[-1]), t)
-        d = ImageDraw.Draw(im)
-        d.rounded_rectangle((PX, 1826, PX + PW, 1836), 5, fill=C["panel"])
-        d.rounded_rectangle((PX, 1826, PX + max(10, int(PW * t / duration)), 1836), 5, fill=C["accent"])
+        progress(ImageDraw.Draw(im), t, duration)
         return im
 
     if frame_at is not None:
@@ -3690,13 +3747,15 @@ def render_scenes(scenes, draw, audio_path, duration, out_path, frame_at=None):
     encode(frame, duration, audio_path, audio_mix(music if music.exists() else None, BRAND["music_volume"], []), out_path)
 
 
-def countdown(d, left, seconds):
-    """The thinking time on screen: a bar that empties and the seconds left. left: 1 = all of it, 0 = none."""
+def countdown(d, left, seconds, box=None):
+    """The thinking time on screen: a bar that empties and the seconds left. left: 1 = all of it, 0 = none.
+    box: (x0, y, x1, number's y), else the shape's place for it (CD)."""
     import math
-    d.rounded_rectangle((60, 1580, W - 60, 1610), 15, fill=C["panel"])
-    d.rounded_rectangle((60, 1580, 60 + max(30, int((W - 120) * left)), 1610), 15, fill=C["accent"])
+    x0, y, x1, ny = box or CD
+    d.rounded_rectangle((x0, y, x1, y + 30), 15, fill=C["panel"])
+    d.rounded_rectangle((x0, y, x0 + max(30, int((x1 - x0) * left)), y + 30), 15, fill=C["accent"])
     if left < 1:
-        d.text((W // 2, 1710), str(math.ceil(left * seconds)), font=font("display", 150), fill=C["accent"], anchor="mm")
+        d.text(((x0 + x1) // 2, ny), str(math.ceil(left * seconds)), font=font("display", S(150)), fill=C["accent"], anchor="mm")
 
 
 # ---------- guess the picture: a blurred photo clears while the viewer names it ----------
@@ -3707,11 +3766,12 @@ English Wikipedia article. Choose ones that look clearly different from each oth
 GUESS_THINK = 4  # seconds the picture takes to clear
 
 
-def make_guess(con, text="", count=5):
+def make_guess(con, text="", count=None):
     """A guessing video on a kind of thing ("famous landmarks", "dog breeds"): the writer's model names well-known
     examples, and each is used only if Wikipedia has an article on it whose main picture is a free photograph. What is
     shown as the answer is that article's own title and one-line description. A channel never repeats a subject."""
     before, topic = dict(ai_used), text.strip() or random_topic()
+    count = count or (5 if W < H else min(40, round(max_len() * 0.85 / 10)))  # about 10 s a picture
     used_file = DB.parent / "guess_used.json"
     used = json.loads(used_file.read_text()) if used_file.exists() else []
     print(f"guess the picture: {topic}")
@@ -3758,18 +3818,21 @@ def render_guess(m, scenes, audio_path, duration, out_path, frame_at=None):
     def card(kind, k):
         if (kind, k) not in cards:
             im, d = backdrop()
+            long = W > H  # a long video: the words in the column beside the picture
             if kind == "intro":
-                y = text_lines(d, m["title"].upper(), "display", 130, 560, 5, C["text"], centre=True)
-                text_lines(d, f"{n} PICTURES · NAME EACH BEFORE IT CLEARS", "display", 56, y + 60, 1, C["accent"], centre=True)
+                y = text_lines(d, m["title"].upper(), "display", S(130), Y(560), 5, C["text"], centre=True)
+                text_lines(d, f"{n} PICTURES · NAME EACH BEFORE IT CLEARS", "display", S(56), y + Y(60), 1, C["accent"], centre=True)
             elif kind == "outro":
-                y = text_lines(d, "HOW MANY DID YOU GET?", "display", 150, 640, 3, C["accent"], centre=True)
-                text_lines(d, f"Tell us your score out of {n} in the comments", "body", 48, y + 50, 2, C["muted"], centre=True)
+                y = text_lines(d, "HOW MANY DID YOU GET?", "display", S(150), Y(640), 3, C["accent"], centre=True)
+                text_lines(d, f"Tell us your score out of {n} in the comments", "body", S(48), y + Y(50), 2, C["muted"], centre=True)
             else:
-                d.text((60, 205), f"NUMBER {k + 1} OF {n}", font=font("display", 54), fill=C["accent"])
-                text_lines(d, items[k]["name"].upper() if kind == "reveal" else "WHAT IS THIS?", "display", 110, 290, 1,
-                           C["accent"] if kind == "reveal" else C["text"])
+                x, top = (TX, PY) if long else (60, 205)
+                d.text((x, top), f"NUMBER {k + 1} OF {n}", font=font("display", 54), fill=C["accent"])
+                y = text_lines(d, items[k]["name"].upper() if kind == "reveal" else "WHAT IS THIS?", "display", 110, top + 85, 3 if long else 1,
+                               C["accent"] if kind == "reveal" else C["text"], x=x, width=TW)
                 if kind == "reveal":
-                    text_lines(d, items[k]["text"][:1].upper() + items[k]["text"][1:], "body", 50, 1500, 3, C["muted"], weight="Medium")
+                    text_lines(d, items[k]["text"][:1].upper() + items[k]["text"][1:], "body", 50, y + 30 if long else 1500, 6 if long else 3,
+                               C["muted"], weight="Medium", x=x, width=TW)
             cards[kind, k] = im
         return cards[kind, k]
 
@@ -3815,15 +3878,17 @@ def day_from(text):
     return mo, d
 
 
-def make_onthisday(con, text="", count=4):
+def make_onthisday(con, text="", count=None):
     """Events from Wikipedia's "On this day" list for a date (today's unless the text names one), oldest first. An
     event is used if it isn't grim, is short enough to read on screen, and one of the articles it links to has a free
     photograph as its main picture. No model is involved: the words are Wikipedia's."""
     before = dict(ai_used)
+    count = count or (4 if W < H else min(20, round(max_len() * 0.85 / 15)))  # about 15 s an event
     mo, d = day_from(text)
     date = f"{d} {MONTH_NAMES[mo - 1]}"
     print(f"on this day: {date}")
-    feed = get_json(f"https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/selected/{mo:02d}/{d:02d}").get("selected") or []
+    which = "selected" if count <= 8 else "events"  # Wikipedia's chosen few, or every event of the day for a long video
+    feed = get_json(f"https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/{which}/{mo:02d}/{d:02d}").get(which) or []
     pid, ep, work = new_video(con, f"onthisday:{date}")
     items = []
     for e in feed[::3] + feed[1::3] + feed[2::3]:  # the list runs newest to oldest: take from across it, not just the top
@@ -3862,7 +3927,8 @@ def render_list(m, scenes, audio_path, duration, out_path, frame_at, label, card
     from PIL import Image, ImageDraw
     ensure_fonts()
     items, cards, pics = m["items"], {}, {}
-    bw, bh, by = PW, 760, 540  # the picture's box
+    long = W > H
+    bw, bh, by = (PW, PH, PY) if long else (PW, 760, 540)  # the picture's box
     mask = Image.new("L", (bw, bh), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, bw, bh), 36, fill=255)
 
@@ -3870,18 +3936,19 @@ def render_list(m, scenes, audio_path, duration, out_path, frame_at, label, card
         if (kind, k) not in cards:
             im, d = backdrop()
             if kind == "intro":
-                y = text_lines(d, cards_text[0], "display", 190, 600, 2, C["text"], centre=True)
-                text_lines(d, cards_text[1], "display", 120, y + 30, 3, C["accent"], centre=True)
+                y = text_lines(d, cards_text[0], "display", S(190), Y(600), 2, C["text"], centre=True)
+                text_lines(d, cards_text[1], "display", S(120), y + 30, 3, C["accent"], centre=True)
             elif kind == "outro":
-                y = text_lines(d, cards_text[1], "display", 120, 640, 3, C["accent"], centre=True)
-                text_lines(d, BRAND["outro_line"], "body", 56, y + 60, 3, C["text"], centre=True, weight="Medium")
-            else:
-                text_lines(d, label, "display", 54, 205, 1, C["accent"])
-                d.text((60, 268), big(k), font=font("display", 200), fill=C["text"])
-                y = by + bh + 44
+                y = text_lines(d, cards_text[1], "display", S(120), Y(640), 3, C["accent"], centre=True)
+                text_lines(d, BRAND["outro_line"], "body", S(56), y + Y(60), 3, C["text"], centre=True, weight="Medium")
+            else:  # a long video: label, number and words in the column beside the picture
+                x, top = (TX, PY) if long else (60, 205)
+                text_lines(d, label, "display", 54, top, 2 if long else 1, C["accent"], x=x, width=TW)
+                d.text((x, top + (110 if long else 63)), big(k), font=font("display", 170 if long else 200), fill=C["text"])
+                y = PY + 340 if long else by + bh + 44
                 if head:
-                    y = text_lines(d, items[k]["name"].upper(), "display", 84, y, 2, C["accent"]) + 14
-                text_lines(d, items[k]["text"], "body", 56, y, 7 if head else 8, C["text"], weight="Medium")
+                    y = text_lines(d, items[k]["name"].upper(), "display", 84, y, 2, C["accent"], x=x, width=TW) + 14
+                text_lines(d, items[k]["text"], "body", 56 if not long else 48, y, (7 if head else 8) - 2 * long, C["text"], weight="Medium", x=x, width=TW)
             cards[kind, k] = im
         return cards[kind, k]
 
@@ -3920,12 +3987,13 @@ Notes:
 Reply as JSON: {{"items": [{{"name": "...", "wikipedia": "...", "fact": "...", "quote": "..."}}]}} with the top one first"""
 
 
-def make_top(con, text="", count=5):
+def make_top(con, text="", count=None):
     """A countdown on a topic ("tallest mountains", "facts about octopuses"): research it, let the writer's model
     choose and order entries from the notes, and keep those whose proof is really in the notes, covers every number
     the fact states, and that have a free picture (the thing's Wikipedia picture, else Wikimedia Commons).
     The order is the model's reading of the notes; nothing in code re-ranks it."""
     before, topic = dict(ai_used), re.sub(r"^top\s*\d*\s*", "", text.strip(), flags=re.I) or random_topic()
+    count = count or (5 if W < H else min(25, round(max_len() * 0.85 / 14)))  # about 14 s an entry
     print(f"countdown: {topic}\n  researching…")
     a = research(f"What are the top {count + 3} {topic}, in order, with the figure for each?")
     r = llm(TOP_PROMPT.format(n=count, more=count + 3, topic=topic, text=a["text"][:12000]), 0.5)
@@ -4042,14 +4110,19 @@ def render_word(m, scenes, audio_path, duration, out_path, frame_at=None):
         shown = -1 if kind == "intro" else len(m["items"]) if kind == "outro" else k
         if shown not in cards:
             im, d = backdrop()
-            d.text((60, 205), "WORD OF THE DAY", font=font("display", 54), fill=C["accent"])
-            y = text_lines(d, m["article_title"].upper(), "display", 190, 290, 1, C["text"])
+            k = 0.85 if W > H else 1  # a long video: the same page, a little smaller, on wider lines
+            d.text((60, 205 if k == 1 else 190), "WORD OF THE DAY", font=font("display", 54), fill=C["accent"])
+            y = text_lines(d, m["article_title"].upper(), "display", round(190 * k), 290 if k == 1 else 275, 1, C["text"])
             if m.get("description"):
                 y = text_lines(d, m["description"], "body", 46, y + 6, 1, C["muted"], weight="Medium")
-            y += 70
+            y += 70 * k
+            cw = (W - 200) // 3  # a long video: the sections side by side; a Short: one under another
             for j, i in enumerate(m["items"][:shown + 1]):
-                d.text((60, y), i["name"].upper(), font=font("display", 50), fill=C["accent"] if j == shown else C["muted"])
-                y = text_lines(d, i["text"], "body", 56, y + 84, 6, C["text"] if j == shown else C["muted"], weight="Medium") + 56
+                x = 60 + j * (cw + 40) if k < 1 else 60
+                d.text((x, y), i["name"].upper(), font=font("display", 50), fill=C["accent"] if j == shown else C["muted"])
+                end = text_lines(d, i["text"], "body", 46 if k < 1 else 56, y + 84, 8 if k < 1 else 6, C["text"] if j == shown else C["muted"],
+                                 weight="Medium", x=x, width=cw if k < 1 else None) + 56
+                y = y if k < 1 else end
             cards[shown] = im
         return cards[shown]
 
@@ -4075,15 +4148,15 @@ ESSAY_STYLE = "painterly digital art, cinematic soft light, muted colours, wide 
 ESSAY_WPS = 2.4  # words a second the voice reads, pauses included
 
 
-def make_essay(con, text="", count=None, shape="long"):
+def make_essay(con, text="", count=None):
     """An essay on an idea or a shower thought: research it, let the writer's model write it as short paragraphs
     from the notes, each with a picture (drawn on this Mac if the picture model is installed, else a free photograph),
     then voice it with the words shown as they are said. shape "long": 16:9 at the channel's long-video length;
-    "short": a vertical Short at its usual length."""
+    "short": a vertical Short at its usual length (the shape being drawn: `run --long/--short`, else the channel's)."""
     before, topic = dict(ai_used), text.strip() or random_topic()
-    long = shape == "long"
-    set_shape(long)
-    seconds = max_len({"shape": shape}) * 0.9
+    long = W > H
+    shape = "long" if long else "short"
+    seconds = max_len() * 0.9
     n = count or max(3, round(seconds * ESSAY_WPS / 38))
     length = f"{seconds / 60:.0f} minutes" if seconds >= 120 else f"{seconds:.0f} seconds"
     print(f"{'long' if long else 'short'} essay on: {topic} ({n} paragraphs, about {length})\n  researching…")
@@ -4979,8 +5052,8 @@ def main():
     r.add_argument("--force", action="store_true")
     r.add_argument("--auto", action="store_true", help="render right away even in manual mode")
     r.add_argument("--upload", action="store_true"); r.add_argument("--publish-at")
-    r.add_argument("--long", action="store_true", help="a long 16:9 video (an essay on the words typed), whatever the channel makes")
-    r.add_argument("--short", action="store_true", help="a vertical Short; on an essay channel, a short essay")
+    r.add_argument("--long", action="store_true", help="make it a long 16:9 video, whatever the channel's default")
+    r.add_argument("--short", action="store_true", help="make it a vertical Short, whatever the channel's default")
     a = sub.add_parser("add", help="save ideas: questions, topics, paragraphs or links")
     a.add_argument("items", nargs="+"); a.add_argument("--force", action="store_true")
     u = sub.add_parser("upload"); u.add_argument("--publish-at"); u.add_argument("--ep", type=int)
@@ -5019,6 +5092,8 @@ def main():
     sc = sub.add_parser("score"); sc.add_argument("--all", action="store_true")
     wb = sub.add_parser("web"); wb.add_argument("--port", type=int, default=8765); wb.add_argument("--no-open", action="store_true")
     args = ap.parse_args()
+    if getattr(args, "long", False) or getattr(args, "short", False):  # this video's shape, over the channel's default
+        set_shape(args.long)
     for d in (ROOT / "data", DB.parent, WORK, OUT, SECRETS, WS_SECRETS, WS / "brand"):
         d.mkdir(exist_ok=True)
     con = db()
@@ -5097,12 +5172,8 @@ def main():
         pull_model(args.model)
     elif args.cmd == "clipadd":
         clip_add(con, args.ep, args.urls, args.part)
-    elif args.cmd == "run" and (args.long or (args.short and BRAND.get("video_type") == "essay")):
-        make_essay(con, args.input or "", shape="long" if args.long else "short")
-        if args.upload:
-            upload_pending(con, args.publish_at)
     elif args.cmd == "clips" or (args.cmd == "run" and clips_channel()):
-        make_clips(con, " ".join(args.items) if args.cmd == "clips" else args.input or random_topic(), getattr(args, "count", 5))
+        make_clips(con, " ".join(args.items) if args.cmd == "clips" else args.input or random_topic(), getattr(args, "count", 5 if W < H else 20))
         if getattr(args, "upload", False):
             upload_pending(con, args.publish_at)
     elif args.cmd == "run" and BRAND.get("video_type") in FORMATS:

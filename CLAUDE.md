@@ -173,8 +173,13 @@ the quiz keeps its parts in meta `items` (name, text, image if any), edited in t
 - **Shape is per video, not per channel:** meta `shape` "long" (16:9, 1920×1080, up to the channel's `long_seconds`,
   default 600; no #shorts) or "short" (9:16, up to `max_seconds`). `set_shape()` sets the module's `W, H` before
   drawing; `max_len(m)` gives the limit; `produce_format()` applies both, so a copy to another channel keeps the shape.
-  The Make box's Short/Long toggle sends `run --long` (an essay on the words, on any channel) or `run --short` (on an
-  essay channel, a short essay). Only essays can be long so far; the other renderers are laid out for 9:16.
+  Every kind can be either: `set_shape()` also sets the layout globals (PX/PY/PW/PH picture panel, TX/TW text column,
+  BAR progress bar, CD countdown; `Y()`/`S()` scale centred title cards), and each renderer has a 16:9 branch (picture
+  left, words in a column on the right; quiz options side by side; word sections side by side). The channel default
+  is brand `shape` (Settings → Videos; essays default long) and is set at import; `run --long/--short` (the Make box's
+  Short/Long toggle, also Remake and New edit) overrides it for one video. Long videos fill `long_seconds`: explainer
+  scripts get `script_words()` and `LONG_NOTE` plus extra research, quiz/top/guess/onthisday counts follow `max_len()`
+  (on-this-day reads the full events feed). Known weak spot: a long explainer's picture search finds few pictures.
 - **essay** (`make_essay`): Shower Philosophy (`workspaces/shower-philosophy`) makes these. `research()` plus, for a
   long one, two `research_web()` rounds, then the writer's model writes paragraphs of 30-45 words with a picture
   description each (`ESSAY_PROMPT`; aim 90% of `max_len`, at `ESSAY_WPS`; ~30 for 10 minutes). Each paragraph's picture

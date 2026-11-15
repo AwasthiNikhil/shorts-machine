@@ -98,6 +98,8 @@ def save_brand(new):
         b["research_from"] = new["research_from"]
     if new.get("video_type") in ("explainer", "clips", *rw.FORMATS):
         b["video_type"] = new["video_type"]
+    if new.get("shape") in ("short", "long"):
+        b["shape"] = new["shape"]
     if new.get("mode") in ("auto", "manual"):
         b["mode"] = new["mode"]
     if "publish_to" in new:
@@ -658,7 +660,11 @@ class H(BaseHTTPRequestHandler):
                 except SystemExit as e:
                     raise ValueError(str(e)) from None
             elif self.path == "/api/clip_new":  # body: {"title"} -> an empty clip video to open in the editor
-                return self.send(200, {"ok": True, "pageid": rw.clip_new(rw.db(), str(body.get("title", "")))})
+                rw.set_shape(body.get("shape") == "long")  # the Make box's Short/Long
+                try:
+                    return self.send(200, {"ok": True, "pageid": rw.clip_new(rw.db(), str(body.get("title", "")))})
+                finally:
+                    rw.set_shape(rw.default_shape() == "long")
             elif self.path == "/api/clips":  # the editor's state. body: {"pageid", "title", "badges", "clips": [{"file", "use", "start", "end",
                 # "fit", "volume", "caption", "crop", "box", "cap"}] in playing order (a file may come twice: two cuts of it),
                 # "audio": [{"file", "at", "start", "end", "volume"}], "texts": [{"text", "at", "len", "x", "y", "size"}]}
@@ -746,7 +752,7 @@ class H(BaseHTTPRequestHandler):
                 meta = work / "meta.json"
                 m = json.loads(meta.read_text())
                 out = []
-                for img in body.get("images", [])[:12]:
+                for img in body.get("images", [])[:80]:  # a long video has a picture per sentence
                     if img.get("file") and (work / Path(img["file"]).name).is_file():  # already in the folder
                         out.append({k: v for k, v in img.items() if k not in ("file", "credit", "tags") and (k != "thumb" or img.get("kind") == "video")}
                                    | {"path": str(work / Path(img["file"]).name)})
