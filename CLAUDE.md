@@ -170,11 +170,15 @@ the quiz keeps its parts in meta `items` (name, text, image if any), edited in t
 - **word** (`make_word`): the typed word, else Wiktionary's word of the day (featured feed); the English entry's plain
   text goes to the writer's model for a meaning, an origin and an example. An origin naming a capitalised word or year
   the entry doesn't have is dropped. No pictures: `render_word()` reveals the sections as they are read.
-- **essay** (`make_essay`): the one long-form 16:9 format (a channel with `video_type: "essay"` gets `W, H` = 1920×1080
-  at import; Shower Philosophy, `workspaces/shower-philosophy`, uses it). `research()` plus two `research_web()` rounds,
-  then the writer's model writes ~30 paragraphs of 30-45 words with a picture description each (`ESSAY_PROMPT`; length
-  from `max_seconds`, aim 90% of it, at `ESSAY_WPS`). Each paragraph's picture is drawn 1280×720 if the picture model is
-  installed (~50 s each), else an Openverse/Commons photo. `render_essay()`: full-frame pictures with slow zoom/drift and
+- **Shape is per video, not per channel:** meta `shape` "long" (16:9, 1920×1080, up to the channel's `long_seconds`,
+  default 600; no #shorts) or "short" (9:16, up to `max_seconds`). `set_shape()` sets the module's `W, H` before
+  drawing; `max_len(m)` gives the limit; `produce_format()` applies both, so a copy to another channel keeps the shape.
+  The Make box's Short/Long toggle sends `run --long` (an essay on the words, on any channel) or `run --short` (on an
+  essay channel, a short essay). Only essays can be long so far; the other renderers are laid out for 9:16.
+- **essay** (`make_essay`): Shower Philosophy (`workspaces/shower-philosophy`) makes these. `research()` plus, for a
+  long one, two `research_web()` rounds, then the writer's model writes paragraphs of 30-45 words with a picture
+  description each (`ESSAY_PROMPT`; aim 90% of `max_len`, at `ESSAY_WPS`; ~30 for 10 minutes). Each paragraph's picture
+  is drawn at 2/3 of the frame size if the picture model is installed (~50 s each), else an Openverse/Commons photo. `render_essay()`: full-frame pictures with slow zoom/drift and
   cross-fades, the spoken phrase along the bottom with the current word lit (word times come from `voice_scenes()`,
   which keeps each line's `tts()` timings in the scene's `words`).
 

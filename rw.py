@@ -51,7 +51,19 @@ if (ROOT / "library").is_dir() and not MEDIA.exists():  # it was library/ (video
     MEDIA.mkdir()
     (ROOT / "library").rename(LIBRARY)
 API = "https://en.wikipedia.org/w/api.php"
-W, H, FPS = (1920, 1080, 30) if BRAND.get("video_type") == "essay" else (1080, 1920, 30)  # essays are long-form 16:9; the rest Shorts
+W, H, FPS = 1080, 1920, 30  # a Short; a long video is 1920×1080 (set_shape)
+
+
+def set_shape(long):
+    """Draw what follows as a long video (16:9) or a Short (9:16). A video's shape is its own (meta "shape"), not
+    its channel's: YouTube calls a vertical video of up to 3 minutes a Short and anything else a regular video."""
+    global W, H
+    W, H = (1920, 1080) if long else (1080, 1920)
+
+
+def max_len(m=None):
+    """How long a video may run: the channel's long-video length for one shaped "long", else its usual length."""
+    return BRAND.get("long_seconds", 600) if (m or {}).get("shape") == "long" else BRAND["max_seconds"]
 PX, PY, PW, PH = 40, 440, 1000, 1000  # image panel
 
 
@@ -2398,8 +2410,14 @@ def audio_mix(music, music_volume, sfx, sfx_volume=0.8):
 
 
 # ---------- orchestration ----------
+def hashtags(m):
+    """The channel's hashtags, without #shorts on a long video."""
+    return [t for t in BRAND["hashtags"] if not (m.get("shape") == "long" and t.lower().lstrip("#") == "shorts")]
+
+
 def description(m):
-    lines = [m["script"].split(". ")[0].rstrip(".") + ".", "",
+    first = m["script"].split(". ")[0].rstrip(".")
+    lines = [first + ("" if first.endswith(("?", "!")) else "."), "",
              *([f"Source: {m['url']}", ""] if m.get("url") else []),
              f"{BRAND['channel']}: {BRAND['tagline']}", "", "CREDITS",
              m.get("credit") or f"Text adapted from the Wikipedia article \"{m['article_title']}\", CC BY-SA 4.0: {m['url']}"]
@@ -2415,7 +2433,7 @@ def description(m):
     narration = {"recording": f"Narration: {BRAND['channel']}.", "clone": "Narration: AI voice clone of the creator (Chatterbox).",
                  "edge": "Narration: AI voice (Microsoft Edge text to speech)."}
     lines += [narration.get(m.get("narration"), "Narration: AI voice (Kokoro TTS).") + " Fonts: SIL OFL.", "",
-              " ".join("#" + re.sub(r"\W", "", t) for t in BRAND["hashtags"] + m["tags"][:3])]
+              " ".join("#" + re.sub(r"\W", "", t) for t in hashtags(m) + m["tags"][:3])]
     return "\n".join(re.sub(r":\s*$", "", l) for l in lines)[:4900]  # a credit with no link doesn't end in a colon
 
 
@@ -2440,7 +2458,7 @@ Reply as JSON: {{"hook": <1-10>, "appeal": <1-10>, "why": "<one short sentence>"
 WEIGHTS = {"demand": 25, "hook": 25, "appeal": 15, "reach": 10, "interest": 10, "visuals": 10, "length": 5}
 
 
-def potential_score(views60, langs, hook, appeal, interest, images, seconds):
+def potential_score(views60, langs, hook, appeal, interest, images, seconds, long=False):
     """Signals -> (0-100 score, {signal: 0-1}). Pure function so it can be tested and refitted."""
     import math
     parts = {
@@ -2449,7 +2467,8 @@ def potential_score(views60, langs, hook, appeal, interest, images, seconds):
         "reach": min(1, langs / 60),                          # 60+ Wikipedia language editions
         "interest": interest / 10,
         "visuals": min(1, images / 4),
-        "length": max(0, 1 - max(0, abs(seconds - 40) - 10) / 20),  # 30-50s ideal, 0 at <=10s or >=70s
+        "length": (max(0, 1 - max(0, abs(seconds - 510) - 90) / 180) if long  # a long video: 7-10 min ideal, 0 under 4 or over 13
+                   else max(0, 1 - max(0, abs(seconds - 40) - 10) / 20)),  # a Short: 30-50s ideal, 0 at <=10s or >=70s
     }
     return round(sum(WEIGHTS[k] * v for k, v in parts.items())), {k: round(v, 2) for k, v in parts.items()}
 
@@ -2474,7 +2493,7 @@ def score_video(con, pageid):
     clamp = lambda v: max(1, min(10, int(v or 5)))
     hook, appeal = clamp(a.get("hook")), clamp(a.get("appeal"))
     seconds = sf.info(str(WORK / str(pageid) / "voice.wav")).duration
-    score, parts = potential_score(views, langs, hook, appeal, row["score"] or hook, len(m["images"]), seconds)
+    score, parts = potential_score(views, langs, hook, appeal, row["score"] or hook, len(m["images"]), seconds, m.get("shape") == "long")
     m["potential"] = dict(score=score, parts=parts, why=a.get("why", ""), views60=views, languages=langs,
                           seconds=round(seconds, 1), scored=time.strftime("%Y-%m-%d"))
     mpath.write_text(json.dumps(m, indent=2))
@@ -3573,13 +3592,15 @@ def produce_format(con, m):
     key, steps_for, renderer, least = FORMATS[m["origin"]][1:]
     work, said = WORK / str(m["pageid"]), {}
     m["narration"] = BRAND.get("voice_engine") if BRAND.get("voice_engine") in ("clone", "edge") else "kokoro"
+    m.setdefault("shape", "long" if m["origin"] == "essay" else "short")  # essays made before shapes existed were long
+    set_shape(m["shape"] == "long")
     print("  voicing…")
     while True:
         steps = steps_for(m)
         scenes = voice_scenes(work, steps, said)
-        if scenes[-1]["end"] <= BRAND["max_seconds"] or len(m[key]) <= least:
+        if scenes[-1]["end"] <= max_len(m) or len(m[key]) <= least:
             break
-        print(f"  {scenes[-1]['end']:.0f}s is over the channel's {BRAND['max_seconds']}s; leaving out the last one")
+        print(f"  {scenes[-1]['end']:.0f}s is over the channel's {max_len(m)}s; leaving out the last one")
         m[key].pop()
     m["script"] = " ".join(line for _, _, line, _, _ in steps if line)
     if key == "items":
@@ -4036,7 +4057,7 @@ def render_word(m, scenes, audio_path, duration, out_path, frame_at=None):
 
 
 # ---------- essays: long-form 16:9 reflections on an idea, a drawn picture per paragraph, the words on screen ----------
-ESSAY_PROMPT = """Write the narration for a calm, reflective long-form YouTube video (about {minutes} minutes) on: "{topic}"
+ESSAY_PROMPT = """Write the narration for a calm, reflective YouTube video (about {length}) on: "{topic}"
 It explores a philosophical idea or a "shower thought". Open with a question or observation that hooks, unfold the idea
 step by step with everyday examples, look at it from a few angles (what thinkers have said, what science says, the
 best objection), and end on a thought that stays with the viewer.
@@ -4054,16 +4075,20 @@ ESSAY_STYLE = "painterly digital art, cinematic soft light, muted colours, wide 
 ESSAY_WPS = 2.4  # words a second the voice reads, pauses included
 
 
-def make_essay(con, text="", count=None):
-    """A long-form 16:9 essay on an idea or a shower thought: research it, let the writer's model write it as short
-    paragraphs from the notes, each with a picture (drawn on this Mac if the picture model is installed, else a free
-    photograph), then voice it with the words shown as they are said."""
+def make_essay(con, text="", count=None, shape="long"):
+    """An essay on an idea or a shower thought: research it, let the writer's model write it as short paragraphs
+    from the notes, each with a picture (drawn on this Mac if the picture model is installed, else a free photograph),
+    then voice it with the words shown as they are said. shape "long": 16:9 at the channel's long-video length;
+    "short": a vertical Short at its usual length."""
     before, topic = dict(ai_used), text.strip() or random_topic()
-    seconds = min(BRAND["max_seconds"], 600) * 0.9
-    n = count or round(seconds * ESSAY_WPS / 38)
-    print(f"essay on: {topic} ({n} paragraphs, about {seconds / 60:.0f} minutes)\n  researching…")
+    long = shape == "long"
+    set_shape(long)
+    seconds = max_len({"shape": shape}) * 0.9
+    n = count or max(3, round(seconds * ESSAY_WPS / 38))
+    length = f"{seconds / 60:.0f} minutes" if seconds >= 120 else f"{seconds:.0f} seconds"
+    print(f"{'long' if long else 'short'} essay on: {topic} ({n} paragraphs, about {length})\n  researching…")
     a = research(topic)
-    for q in (f"{topic} philosophy", f"{topic} explained"):  # a long video needs more than one round of notes
+    for q in (f"{topic} philosophy", f"{topic} explained") if long else ():  # a long video needs more than one round of notes
         try:
             more = research_web(q, pages=4)
             a["text"] += "\n\n" + more["text"]
@@ -4072,14 +4097,14 @@ def make_essay(con, text="", count=None):
             print(f"  more research on '{q}' failed ({e})")
     best = {}
     for _ in range(2):  # small models stop early; keep the longer of two tries
-        r = llm(ESSAY_PROMPT.format(minutes=round(seconds / 60), topic=topic, n=n, text=a["text"][:24000]), 0.7)
+        r = llm(ESSAY_PROMPT.format(length=length, topic=topic, n=n, text=a["text"][:24000]), 0.7)
         paras = [p for p in r.get("paragraphs") or [] if isinstance(p, dict) and len(str(p.get("text") or "").split()) >= 8]
         if len(paras) > len(best.get("paragraphs", [])):
             best = r | {"paragraphs": paras}
         if len(paras) >= n * 0.8:
             break
     paras = best.get("paragraphs") or []
-    if len(paras) < 8:
+    if len(paras) < min(n, 8):
         raise RuntimeError(f"the writer gave {len(paras)} paragraphs on \"{topic}\"; try again or another topic")
     words = sum(len(str(p["text"]).split()) for p in paras)
     print(f"  {len(paras)} paragraphs, {words} words (about {words / ESSAY_WPS / 60:.1f} minutes)")
@@ -4093,7 +4118,7 @@ def make_essay(con, text="", count=None):
         try:
             if drawn:
                 path = work / f"img_{hashlib.sha1(f'{scene}{style}'.encode()).hexdigest()[:10]}.png"
-                generate_image(f"{scene}. {style}", path, 1280, height=720, preview=path.stem if os.environ.get("RW_STUDIO") else None)
+                generate_image(f"{scene}. {style}", path, W * 2 // 3, height=H * 2 // 3, preview=path.stem if os.environ.get("RW_STUDIO") else None)
                 img = dict(source="ai", url="ai:" + path.stem, name=scene[:150], page="", artist="FLUX.1 schnell",
                            license="AI-generated", path=str(path), query=scene)
             else:
@@ -4105,10 +4130,10 @@ def make_essay(con, text="", count=None):
             img = items[-1]["image"]
         if img:
             items.append(dict(name=f"Part {k + 1}", text=re.sub(r"\s+", " ", str(p["text"])).strip(), image=img, picture=scene))
-    if len(items) < 8:
+    if len(items) < min(n, 8):
         raise RuntimeError("couldn't find or draw pictures for the essay")
     title = str(best.get("title") or topic).strip()[:90]
-    m = dict(ep=ep, pageid=pid, origin="essay", article_title=topic, description="", title=title, items=items, script="",
+    m = dict(ep=ep, pageid=pid, origin="essay", shape=shape, article_title=topic, description="", title=title, items=items, script="",
              images=[], tags=[w for w in re.findall(r"[a-z0-9]+", topic.lower()) if len(w) > 3][:5],
              url=a["url"], credit=a["credit"], source_label=a["source_label"])
     return make_format(con, m, topic, before)
@@ -4165,8 +4190,8 @@ def render_essay(m, scenes, audio_path, duration, out_path, frame_at=None):
         return overlays[key]
 
     def words_at(d, ph, lit):
-        f, ls = fit_lines(" ".join(w for w, _, _ in ph), "body", 60, W - 400, 2, "SemiBold")
-        y, n = H - 110 - len(ls) * f.size * 1.3, 0
+        f, ls = fit_lines(" ".join(w for w, _, _ in ph), "body", 60 if W > H else 66, int(W * 0.8), 2 if W > H else 3, "SemiBold")
+        y, n = (H - 110 if W > H else H * 0.74) - len(ls) * f.size * 1.3, 0  # a Short's lower part is under YouTube's buttons
         for l in ls:
             x = (W - f.getlength(l)) / 2
             for w in l.split():
@@ -4190,14 +4215,14 @@ def render_essay(m, scenes, audio_path, duration, out_path, frame_at=None):
             def card(d):
                 d.rectangle((0, 0, W, H), fill=(0, 0, 0, 90))
                 if s["kind"] == "intro":
-                    f, ls = fit_lines(m["title"], "display", 110, W - 300, 3)
+                    f, ls = fit_lines(m["title"], "display", 110, int(W * 0.85), 3 if W > H else 5)
                     y = H / 2 - len(ls) * f.size * 0.6
                     for l in ls:
                         d.text((W / 2, y), l, font=f, fill="#FFFFFF", anchor="mt")
                         y += f.size * 1.2
                     d.text((W / 2, y + 40), BRAND["channel"].upper(), font=font("display", 44), fill=C["accent"], anchor="mt")
                 else:
-                    f, ls = fit_lines(BRAND["outro_line"], "display", 80, W - 300, 3)
+                    f, ls = fit_lines(BRAND["outro_line"], "display", 80, int(W * 0.85), 4)
                     for j, l in enumerate(ls):
                         d.text((W / 2, H / 2 + (j - len(ls) / 2) * f.size * 1.2), l, font=f, fill="#FFFFFF", anchor="mt")
             ov = overlay((s["kind"],), card)
@@ -4221,7 +4246,7 @@ FORMATS = {"quiz": (make_quiz, "quiz", quiz_steps, render_quiz, 3),
            "onthisday": (make_onthisday, "items", onthisday_steps, render_onthisday, 2),
            "top": (make_top, "items", top_steps, render_top, 3),
            "word": (make_word, "items", word_steps, render_word, 2),
-           "essay": (make_essay, "items", essay_steps, render_essay, 8)}
+           "essay": (make_essay, "items", essay_steps, render_essay, 3)}
 
 
 def copy_to(con, ep, to):
@@ -4787,13 +4812,13 @@ def upload_youtube(row, m, publish_at):
     if publish_at:
         status["publishAt"] = publish_at
     body = {"snippet": {"title": m["title"], "description": m["yt_description"],
-                        "tags": BRAND["hashtags"] + m["tags"], "categoryId": "27"}, "status": status}
+                        "tags": hashtags(m) + m["tags"], "categoryId": "27"}, "status": status}
     req = youtube(YT_UPLOAD).videos().insert(part="snippet,status", body=body,
                              media_body=MediaFileUpload(row["video_path"], chunksize=-1, resumable=True))
     resp = None
     while resp is None:
         _, resp = req.next_chunk()
-    return resp["id"], f"https://youtube.com/{'watch?v=' if W > H else 'shorts/'}{resp['id']} ({status['privacyStatus']})"
+    return resp["id"], f"https://youtube.com/{'watch?v=' if m.get("shape") == "long" else 'shorts/'}{resp['id']} ({status['privacyStatus']})"
 
 
 def upload(con, pageid, publish_at=None):
@@ -4954,6 +4979,8 @@ def main():
     r.add_argument("--force", action="store_true")
     r.add_argument("--auto", action="store_true", help="render right away even in manual mode")
     r.add_argument("--upload", action="store_true"); r.add_argument("--publish-at")
+    r.add_argument("--long", action="store_true", help="a long 16:9 video (an essay on the words typed), whatever the channel makes")
+    r.add_argument("--short", action="store_true", help="a vertical Short; on an essay channel, a short essay")
     a = sub.add_parser("add", help="save ideas: questions, topics, paragraphs or links")
     a.add_argument("items", nargs="+"); a.add_argument("--force", action="store_true")
     u = sub.add_parser("upload"); u.add_argument("--publish-at"); u.add_argument("--ep", type=int)
@@ -5070,6 +5097,10 @@ def main():
         pull_model(args.model)
     elif args.cmd == "clipadd":
         clip_add(con, args.ep, args.urls, args.part)
+    elif args.cmd == "run" and (args.long or (args.short and BRAND.get("video_type") == "essay")):
+        make_essay(con, args.input or "", shape="long" if args.long else "short")
+        if args.upload:
+            upload_pending(con, args.publish_at)
     elif args.cmd == "clips" or (args.cmd == "run" and clips_channel()):
         make_clips(con, " ".join(args.items) if args.cmd == "clips" else args.input or random_topic(), getattr(args, "count", 5))
         if getattr(args, "upload", False):

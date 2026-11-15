@@ -129,7 +129,6 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 dialog::backdrop { background: #000a; backdrop-filter: blur(3px); }
 .detail { display: grid; grid-template-columns: 300px 1fr; max-height: 90vh; }
 .detail video { width: 100%; aspect-ratio: 9/16; background: #000; display: block; }
-body[data-format=essay] .detail video { aspect-ratio: 16/9; }
 .detail .info { padding: 20px 24px; overflow: auto; }
 .detail h2 { margin: 4px 0 2px; font: 30px/1.15 Anton; letter-spacing: .3px; }
 .detail .sub { color: var(--muted); margin-bottom: 14px; }
@@ -225,6 +224,7 @@ body[data-format=essay] .detail video { aspect-ratio: 16/9; }
 .empty { color: var(--muted); padding: 40px 0; text-align: center; }
 .more { display: flex; justify-content: center; padding: 18px 0; grid-column: 1 / -1; }
 .thumb img.poster, .pthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb img.wide, .pthumb img.wide { object-fit: contain; }  /* a long 16:9 video: whole, not cropped */
 
 
 /* ---- settings ---- */
@@ -587,6 +587,7 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
           </fieldset>
           <fieldset class="scard" data-group="content"><legend>Making a video</legend>
             <label style="max-width:320px">Longest video <small>seconds; Shorts are up to 180, longer becomes a regular video</small><input type="number" name="max_seconds" min="20" max="900"></label>
+            <label style="max-width:320px" data-for="explainer">Longest long video <small>seconds, for videos made with Long (16:9); essays aim for 90% of it</small><input type="number" name="long_seconds" min="120" max="3600"></label>
             <label style="max-width:320px" data-for="quiz">Seconds to think <small>before each answer; the number of questions follows the length</small><input type="number" name="quiz_think" min="2" max="20"></label>
             <div class="tiles">
               <label class="tile"><input type="radio" name="mode" value="auto"><b>In one go</b>
@@ -851,6 +852,7 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
         <h4>Make a video</h4>
         <textarea id="input" class="make" rows="4" placeholder="Ask a question, name a topic, paste a paragraph or a link" aria-label="What to make a video from"></textarea>
         <div class="row" style="margin-top:8px">
+          <span class="seg" id="shape" data-for="explainer" role="group" aria-label="Video shape" title="Short: vertical, YouTube Shorts. Long: a 16:9 essay of several minutes on what you type (length in Settings → Videos)."><button type="button" data-shape="short" class="on">Short</button><button type="button" data-shape="long">Long</button></span>
           <button class="btn primary" id="makeNow" title="Make it now. Empty: the next idea in the ideabank, else a random page">Make now</button>
           <button class="btn" id="newEdit" data-for="clips" title="Start an empty video and build it yourself in the editor. Links typed above are fetched into it.">New edit</button>
           <button class="btn" id="saveIdea" data-for="explainer" title="Save it to the ideabank for later">Save idea</button>
@@ -1033,7 +1035,7 @@ function renderEpisodes() {
   $("#epGrid").innerHTML = !eps.length ? `<div class="empty">No videos yet. Click <b>Make next video</b>.</div>`
     : !shown.length ? `<div class="empty">No videos match.</div>` : `<div class="grid">${shown.map(p => `
     <button class="card" data-id="${p.pageid}">
-      <div class="thumb">${p.video ? `<img class="poster" src="/poster/${encodeURIComponent(p.video)}.jpg" alt="" loading="lazy">`
+      <div class="thumb">${p.video ? `<img class="poster" src="/poster/${encodeURIComponent(p.video)}.jpg" alt="" loading="lazy" onload="this.naturalWidth > this.naturalHeight && this.classList.add('wide')">`
         : p.cover ? `<img class="poster" src="/work/${p.pageid}/${encodeURIComponent(p.cover)}" alt="" loading="lazy">`
         : p.clip_cover ? `<img class="poster" src="/media/video/${encodeURIComponent(p.clip_cover)}" alt="" loading="lazy">` : "?"}</div>
       <div class="body"><div class="top"><span class="ep">${p.ep ? "EP " + String(p.ep).padStart(3, "0") : "—"}</span>${potBadge(p)}</div>
@@ -1072,7 +1074,7 @@ function renderPublish() {
       <div class="qitem pitem ${i === 0 ? "next" : ""}" draggable="true" data-sid="${p.pageid}">
         <button class="grip" aria-label="Reorder ${esc(p.yt_title || p.title)} (drag, or use arrow keys)" title="Drag to reorder (or focus and press ↑/↓)">⠿</button>
         <div class="qpos">${i + 1}</div>
-        <div class="pthumb">${p.video ? `<img src="/poster/${encodeURIComponent(p.video)}.jpg" alt="" loading="lazy">` : ""}</div>
+        <div class="pthumb">${p.video ? `<img src="/poster/${encodeURIComponent(p.video)}.jpg" alt="" loading="lazy" onload="this.naturalWidth > this.naturalHeight && this.classList.add('wide')">` : ""}</div>
         <div>
           <h3>${esc(p.yt_title || p.title)}</h3>
           <div class="qmeta">
@@ -1409,7 +1411,7 @@ async function openDetail(id) {
   if (r.ok) Object.assign(p, await r.json());
   const yt = p.video_id ? `https://youtube.com/shorts/${p.video_id}` : null;
   $("#dlgBody").innerHTML = `<div class="detail">
-    ${p.video ? `<video src="/video/${encodeURIComponent(p.video)}" controls autoplay playsinline></video>`
+    ${p.video ? `<video src="/video/${encodeURIComponent(p.video)}" controls autoplay playsinline onloadedmetadata="this.style.aspectRatio = this.videoWidth + '/' + this.videoHeight"></video>`
       : p.images?.[0]?.file ? `<div class="thumb" style="position:relative"><img src="/work/${p.pageid}/${encodeURIComponent(p.images[0].file)}" alt="" style="width:100%;height:100%;object-fit:cover">
           <span class="chip s-draft" style="position:absolute;left:12px;top:12px;background:#1f1430">${p.status === "draft" ? "draft · not rendered yet" : "not rendered"}</span></div>`
       : p.clips?.length ? `<video src="/media/video/${encodeURIComponent(p.clips[0].file)}" controls playsinline></video>` : `<div class="thumb">?</div>`}
@@ -1420,7 +1422,7 @@ async function openDetail(id) {
       <div class="btns">
         ${p.status === "rendered" ? `<button class="btn primary" data-upload="${p.ep}">Publish</button>` : ""}
         ${p.video && p.origin !== "clips" ? `<button class="btn" data-cutcopy="${p.pageid}" title="Opens a copy of this video on a timeline: split it, cut parts out, move them, add sound and text. This video stays as it is.">Cut in the editor</button>` : ""}
-        ${p.status !== "uploaded" ? `<button class="btn" data-remake="${esc(makeArg(p))}">Remake</button>` : ""}
+        ${p.status !== "uploaded" ? `<button class="btn" data-remake="${esc(makeArg(p))}" data-shape-of="${p.origin === "essay" ? p.shape || "long" : "short"}">Remake</button>` : ""}
         ${["rendered", "queued", "failed"].includes(p.status) ? `<button class="btn danger" data-skip="${p.pageid}">Skip (don't upload)</button>` : ""}
         ${p.ep && p.status !== "uploaded" ? `<span id="delVidBox"><button class="btn danger" data-delvid="${p.pageid}">Delete video</button></span>` : ""}
         ${p.status === "uploaded" ? `<span id="unpubBox"><button class="btn danger" data-unpub="${p.ep}">Delete from YouTube…</button></span>` : ""}
@@ -1685,10 +1687,15 @@ document.addEventListener("click", async e => {
       && await post("/api/images", {pageid: pid, images: edImages, audio: {music: $("#sndMusic").value, music_volume: +$("#sndVol").value}});
     if (ok) { dlg.close(); exec(`rerender --ep ${+t.dataset.ep}`); } else { t.disabled = false; t.textContent = "Try again"; }
   }
-  else if (t.dataset.remake) { dlg.close(); exec(`run --force ${quote(t.dataset.remake)}`); }
+  else if (t.dataset.remake) { dlg.close(); exec(`run --force${t.dataset.shapeOf ? shapeFlag(t.dataset.shapeOf) : ""} ${quote(t.dataset.remake)}`); }
   else if (t.dataset.skip) { if (await post("/api/skip", {pageid: +t.dataset.skip})) { if (dlg.open) dlg.close(); termLine("removed/skipped page " + t.dataset.skip); loadPages(); } }
 });
-$("#makeNow").onclick = () => { const v = $("#input").value.trim(); exec("run" + (v ? " " + quote(v) : "")).then(ok => ok && ($("#input").value = "")); };
+// Short or Long, per video: Long makes a 16:9 essay whatever the channel makes; Short on an essay channel, a short essay
+const shapeFlag = shape => shape === "long" ? " --long" : document.body.dataset.format === "essay" ? " --short" : "";
+const setShape = shape => { document.querySelectorAll("#shape button").forEach(b => b.classList.toggle("on", b.dataset.shape === shape)); setVtype(document.body.dataset.format); };
+const pickedShape = () => document.querySelector("#shape .on")?.dataset.shape || "short";
+$("#shape").onclick = e => { const b = e.target.closest("[data-shape]"); if (b) setShape(b.dataset.shape); };
+$("#makeNow").onclick = () => { const v = $("#input").value.trim(); exec("run" + shapeFlag(pickedShape()) + (v ? " " + quote(v) : "")).then(ok => ok && ($("#input").value = "")); };
 const LINK = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/;
 $("#saveIdea").onclick = () => {
   const v = $("#input").value.trim(); if (!v) return termLine("! type or paste something first", "err");
@@ -2378,7 +2385,8 @@ function setDirty(d) { $("#sState").innerHTML = d ? `<span class="dirty">Unsaved
 function setVtype(t) {
   document.body.dataset.vtype = t === "clips" ? "clips" : "explainer";
   document.body.dataset.format = t || "";
-  $("#input").placeholder = t === "clips" ? "Type what to search for (funny cats), or paste video links" : t === "quiz" ? "Name a topic to make a quiz on (the solar system)" : t === "guess" ? "Name a kind of thing to guess from pictures (famous landmarks)" : t === "onthisday" ? "Leave empty for today, or type a date (25 December)" : t === "top" ? "Name what to count down (tallest mountains on Earth)" : t === "word" ? "Leave empty for today's word, or type a word (petrichor)" : t === "essay" ? "Name an idea or a shower thought (why does time feel faster as we age?)" : "Ask a question, name a topic, paste a paragraph or a link";
+  if (!setVtype.done && t) { setVtype.done = true; document.querySelectorAll("#shape button").forEach(b => b.classList.toggle("on", b.dataset.shape === (t === "essay" ? "long" : "short"))); }  // each channel starts on its own shape
+  $("#input").placeholder = pickedShape() === "long" && t !== "essay" ? "Name an idea or a question for a long 16:9 essay (is free will an illusion?)" : t === "clips" ? "Type what to search for (funny cats), or paste video links" : t === "quiz" ? "Name a topic to make a quiz on (the solar system)" : t === "guess" ? "Name a kind of thing to guess from pictures (famous landmarks)" : t === "onthisday" ? "Leave empty for today, or type a date (25 December)" : t === "top" ? "Name what to count down (tallest mountains on Earth)" : t === "word" ? "Leave empty for today's word, or type a word (petrichor)" : t === "essay" ? "Name an idea or a shower thought (why does time feel faster as we age?)" : "Ask a question, name a topic, paste a paragraph or a link";
 }
 const SETTINGS_PAGES = {brand: ["Channel", "The name, look and words that go on every video."],
   content: ["Videos", "What this channel makes, what it's about, and how a video gets made."],
@@ -2409,6 +2417,7 @@ async function loadSettings() {
   F("say").value = Object.entries(S.say || {}).map(([k, v]) => `${k} = ${v}`).join("\n");
   ["channel", "tagline", "outro_line", "logo_text", "voice_speed", "music_volume", "min_score", "max_seconds"].forEach(k => F(k).value = S[k] ?? "");
   F("quiz_think").value = S.quiz_think || 3;
+  F("long_seconds").value = S.long_seconds || 600;
   F("logo_text").value = S.logo_text ?? "?";
   F("hashtags").value = (S.hashtags || []).join(", ");
   F("topics").value = (S.topics || []).join(", ");
@@ -2476,7 +2485,7 @@ function collect() {
     music_volume: +F("music_volume").value, voice_engine: document.querySelector("[name=vEngine]:checked")?.value || "kokoro", edge_voice: $("#edgeSel").value || S.edge_voice,
     clone_consent: $("#cloneConsent").checked, mode: document.querySelector("[name=mode]:checked")?.value || "auto", video_type: document.querySelector("[name=vtype]:checked")?.value || "explainer", research_from: document.querySelector("[name=researchFrom]:checked")?.value || "web",
     pictures: document.querySelector("[name=pictures]:checked")?.value || "libraries", picture_style: F("picture_style").value, clip_strip_voice: F("clip_strip_voice").checked, clip_find: F("clip_find").value, clip_days: +F("clip_days").value, clip_fit: F("clip_fit").value, clip_allow_text: F("clip_allow_text").checked, clip_sources: F("clip_sources").value.split("\n").map(x => x.trim()).filter(Boolean),
-    topics: F("topics").value.split(",").map(x => x.trim()).filter(Boolean), idea_source: document.querySelector("[name=ideaSrc]:checked")?.value || "mix", min_score: +F("min_score").value, max_seconds: +F("max_seconds").value, quiz_think: +F("quiz_think").value || 3, llm: $("#llmSel").value, gemini_model: $("#gemSel").value, claude_model: $("#clSel").value,
+    topics: F("topics").value.split(",").map(x => x.trim()).filter(Boolean), idea_source: document.querySelector("[name=ideaSrc]:checked")?.value || "mix", min_score: +F("min_score").value, max_seconds: +F("max_seconds").value, long_seconds: +F("long_seconds").value || 600, quiz_think: +F("quiz_think").value || 3, llm: $("#llmSel").value, gemini_model: $("#gemSel").value, claude_model: $("#clSel").value,
     ...Object.fromEntries([...document.querySelectorAll("[data-provmodel]")].map(x => [x.dataset.provmodel + "_model", x.value])),
     ai: document.querySelector("[name=aiPick]:checked")?.value || "local", publish_to: [...document.querySelectorAll("[data-pub]:checked")].map(c => c.dataset.pub),
     prompts: Object.fromEntries([...document.querySelectorAll("[data-prompt]")].map(t => [t.dataset.prompt, t.value])),
