@@ -3356,7 +3356,17 @@ Options: {options}
 Going only by the sentence, which option answers the question?
 Reply as JSON: {{"answer": "<that option, copied exactly, or none if the sentence doesn't say>"}}"""
 
-QUIZ_THINK = 3  # seconds the viewer gets before the answer
+def quiz_think():
+    """Seconds the viewer gets before the answer (Settings → Videos, quiz channels; 3 by default)."""
+    return int(BRAND.get("quiz_think") or 3)
+
+
+def quiz_count():
+    """How many questions to write for the channel's longest video: each takes about 5.5 s to ask and answer plus the
+    thinking time; aim a quarter over, since some fail their checks and produce_format() drops the last ones anyway
+    once the video passes the length."""
+    fit = (BRAND["max_seconds"] - 14) / (5.5 + quiz_think())
+    return max(5, round(fit * (1.25 if fit > 10 else 1)))
 
 
 def quiz_questions(topic, text, count):
@@ -3366,8 +3376,12 @@ def quiz_questions(topic, text, count):
     import random
     norm = lambda x: re.sub(r"\W+", " ", str(x)).lower().strip()
     good, title, why = [], "", {"proof not in the research": 0, "proof doesn't settle it": 0, "badly formed": 0}
-    for _ in range(2):
-        r = llm(QUIZ_PROMPT.format(topic=topic, n=count + 3, text=text[:12000]), 0.6)
+    # a long quiz needs more facts than one prompt can hold: write questions from one slice of the notes at a time
+    chunks = [text[i:i + 12000] for i in range(0, max(len(text), 1), 12000)] if count > 10 else [text[:12000]]
+    for attempt in range((3 if count > 10 else 2) * len(chunks)):
+        if count > 10:
+            print(f"  writing questions: {len(good)} of {count} so far", flush=True)
+        r = llm(QUIZ_PROMPT.format(topic=topic, n=min(count - len(good), 12) + 3, text=chunks[attempt % len(chunks)]), 0.6)
         title = title or re.sub(r".*\d.*", "", str(r.get("title") or "").strip()[:70])  # a number in it may not match what's kept
         for q in r.get("questions") or []:
             if len(good) == count:
@@ -3400,12 +3414,23 @@ def quiz_questions(topic, text, count):
     return title, good
 
 
-def make_quiz(con, text="", count=5):
+def make_quiz(con, text="", count=None):
     """A quiz video on a topic: research it, write questions the research proves (quiz_questions), then voice and
-    render. Always made straight away; the questions can be edited in the studio afterwards."""
+    render. Always made straight away; the questions can be edited in the studio afterwards. The number of questions
+    follows the channel's longest video; a long quiz reads many more pages, since every question needs its own fact."""
     before, topic = dict(ai_used), text.strip() or random_topic()
-    print(f"quiz on: {topic}\n  researching…")
+    count = count or quiz_count()
+    print(f"quiz on: {topic} ({count} questions)\n  researching…")
     a = research(topic)
+    if count > 10:  # one round of notes proves 10-15 questions at most
+        for q in (topic, f"{topic} facts", f"{topic} history", f"{topic} explained"):
+            try:
+                more = research_web(q, pages=8)
+                a["text"] += "\n\n" + more["text"]
+                a["credit"] += " " + more["credit"].removeprefix("Researched from: ")
+            except Exception as e:
+                print(f"  more research on '{q}' failed ({e})")
+        print(f"  notes: {len(a['text'].split())} words")
     title, quiz = quiz_questions(topic, a["text"], count)
     pid, ep, _ = new_video(con, f"quiz:{topic}")
     m = dict(ep=ep, pageid=pid, origin="quiz", article_title=topic, description="", title=title or f"{len(quiz)} questions: {topic}"[:70],
@@ -3435,7 +3460,7 @@ def render_quiz(m, scenes, audio_path, duration, out_path, frame_at=None):
         im, d = backdrop()
         if kind == "intro":
             y = lines(d, m["title"].upper(), "display", 130, 560, 5, C["text"], centre=True)
-            lines(d, f"{n} QUESTION{'S' * (n > 1)} · {QUIZ_THINK} SECONDS EACH", "display", 60, y + 60, 1, C["accent"], centre=True)
+            lines(d, f"{n} QUESTION{'S' * (n > 1)} · {quiz_think()} SECONDS EACH", "display", 60, y + 60, 1, C["accent"], centre=True)
         elif kind == "outro":
             y = lines(d, "HOW MANY DID YOU GET?", "display", 150, 640, 3, C["accent"], centre=True)
             lines(d, f"Tell us your score out of {n} in the comments", "body", 48, y + 50, 2, C["muted"], centre=True)
@@ -3462,11 +3487,11 @@ def render_quiz(m, scenes, audio_path, duration, out_path, frame_at=None):
         im = card("ask" if s["kind"] == "think" else s["kind"], s["q"]).copy()
         d = ImageDraw.Draw(im)
         if s["kind"] in ("ask", "think"):  # the thinking time: a bar that empties and the seconds left
-            left = 1 - (t - s["start"]) / QUIZ_THINK if s["kind"] == "think" else 1
+            left = 1 - (t - s["start"]) / quiz_think() if s["kind"] == "think" else 1
             d.rounded_rectangle((60, 1580, W - 60, 1610), 15, fill=C["panel"])
             d.rounded_rectangle((60, 1580, 60 + max(30, int((W - 120) * left)), 1610), 15, fill=C["accent"])
             if s["kind"] == "think":
-                d.text((W // 2, 1710), str(math.ceil(left * QUIZ_THINK)), font=font("display", 150), fill=C["accent"], anchor="mm")
+                d.text((W // 2, 1710), str(math.ceil(left * quiz_think())), font=font("display", 150), fill=C["accent"], anchor="mm")
         d.rounded_rectangle((PX, 1826, PX + PW, 1836), 5, fill=C["panel"])
         d.rounded_rectangle((PX, 1826, PX + max(10, int(PW * t / duration)), 1836), 5, fill=C["accent"])
         return im
@@ -3481,8 +3506,8 @@ def render_quiz(m, scenes, audio_path, duration, out_path, frame_at=None):
 def quiz_steps(m):
     n = len(m["quiz"])
     return ([("intro", None, f"{number_words(n).capitalize()} question{'s' * (n > 1)} on {m['article_title']}. "
-                             f"{number_words(QUIZ_THINK).capitalize()} seconds each.", 0, None)]
-            + [s for k, q in enumerate(m["quiz"]) for s in (("ask", k, q["question"], 0, None), ("think", k, None, QUIZ_THINK, "tick"),
+                             f"{number_words(quiz_think()).capitalize()} seconds each.", 0, None)]
+            + [s for k, q in enumerate(m["quiz"]) for s in (("ask", k, q["question"], 0, None), ("think", k, None, quiz_think(), "tick"),
                                                             ("reveal", k, q["answer"] + ".", 0.4, "chime"))]
             + [("outro", None, "How many did you get? " + BRAND["outro_line"], 0, None)])
 

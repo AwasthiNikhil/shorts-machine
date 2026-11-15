@@ -62,7 +62,7 @@ def save_brand(new):
     if b["voice_engine"] == "clone" and not (b["clone_consent"] and (rw.WS / "brand" / "voice_sample.wav").exists()):
         raise ValueError("to use your cloned voice, record or upload a voice sample and tick the confirmation")
     b["voice_sample"] = "brand/voice_sample.wav"
-    b["music_volume"], b["min_score"], b["max_seconds"] = num("music_volume", 0, 0.5), num("min_score", 1, 10, int), num("max_seconds", 20, 175, int)
+    b["music_volume"], b["min_score"], b["max_seconds"] = num("music_volume", 0, 0.5), num("min_score", 1, 10, int), num("max_seconds", 20, 900, int)
     b["llm"] = text("llm", 1, 80)
     if "gemini_model" in new:
         b["gemini_model"] = text("gemini_model", 1, 80)
@@ -85,6 +85,8 @@ def save_brand(new):
         b["clip_days"] = int(new["clip_days"]) if int(new["clip_days"] or 0) in rw.CLIP_AGE else 0
     if "clip_allow_text" in new:
         b["clip_allow_text"] = bool(new["clip_allow_text"])
+    if "quiz_think" in new:
+        b["quiz_think"] = min(max(int(new["quiz_think"] or 3), 2), 20)
     if new.get("clip_fit") in ("blur", "zoom"):
         b["clip_fit"] = new["clip_fit"]
     if "clip_sources" in new:
