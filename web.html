@@ -272,9 +272,22 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
 .edstage { position: relative; height: 100%; min-height: 0; aspect-ratio: 9 / 16; max-width: 100%; background: #000; border-radius: 10px; overflow: hidden; flex: 0 1 auto; }
 .edview .edrow { flex: none; }
 #edBg { position: absolute; inset: -8%; background-size: cover; background-position: center; filter: blur(14px) brightness(.8); }
+#edFrame { position: absolute; overflow: hidden; inset: 0; }
 #edVideo { position: absolute; inset: 0; width: 100%; height: 100%; }
+#edBox { position: absolute; outline: 1px dashed #fff9; cursor: move; touch-action: none; }
+#edBox.sel { outline: 2px solid var(--accent); }
+#edBox i { position: absolute; width: 14px; height: 14px; background: var(--accent); border: 2px solid #000; border-radius: 3px; display: none; }
+#edBox.sel i { display: block; }
+#edBox [data-drag=box-nw] { left: -8px; top: -8px; cursor: nwse-resize; } #edBox [data-drag=box-ne] { right: -8px; top: -8px; cursor: nesw-resize; }
+#edBox [data-drag=box-sw] { left: -8px; bottom: -8px; cursor: nesw-resize; } #edBox [data-drag=box-se] { right: -8px; bottom: -8px; cursor: nwse-resize; }
+.edstage .plate { position: absolute; translate: -50% -50%; max-width: 88.9%; width: max-content; background: #0E1116d8; font-family: Anton; line-height: 1.2;
+  padding: calc(var(--k, .3) * 25px) calc(var(--k, .3) * 45px); border-radius: calc(var(--k, .3) * 30px); text-align: center; cursor: move; touch-action: none; user-select: none; }
+.edstage .plate.sel { outline: 2px solid var(--accent); outline-offset: 2px; }
+.edstage .plate .rs { position: absolute; right: -7px; bottom: -7px; width: 12px; height: 12px; background: var(--accent); border: 2px solid #000; border-radius: 3px; cursor: nwse-resize; display: none; }
+.edstage .plate.sel .rs { display: block; }
+.edfour { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; } .edfour input { width: 100%; }
 #edBadge { position: absolute; left: 4%; top: 7%; background: var(--accent); color: var(--bg); font: 700 clamp(16px, 3.4vh, 40px) Anton; padding: 0 .3em; border-radius: .2em; }
-#edCap { position: absolute; left: 50%; translate: -50% -50%; top: 72%; max-width: 88%; width: max-content; background: #0E1116d8; font: clamp(12px, 2.3vh, 28px) Anton; padding: .4em .5em; border-radius: .5em; text-align: center; }
+
 #edEmpty { position: absolute; inset: 0; display: grid; place-items: center; }
 #edTime { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 130px; }
 .edinsp label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); } .edinsp label.check { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; color: var(--text); }
@@ -291,9 +304,7 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
 .edhint { position: absolute; left: 60px; top: 50%; translate: 0 -50%; font-size: 12.5px; color: var(--muted); pointer-events: none; white-space: nowrap; }
 .edclip { position: absolute; top: 0; bottom: 0; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; background-color: var(--panel2); background-size: auto 100%; background-repeat: repeat-x; overflow: hidden; cursor: grab; display: flex; flex-direction: column; justify-content: space-between; padding: 4px 9px; }
 .edclip.txt { background: color-mix(in srgb, var(--accent) 22%, var(--panel2)); justify-content: center; }
-#edTexts span { position: absolute; left: 50%; translate: -50% -50%; max-width: 88%; width: max-content; background: #0E1116d8; font-family: Anton; padding: .35em .6em; border-radius: .5em; text-align: center; }
-#edTexts .p-top { top: 22%; } #edTexts .p-middle { top: 50%; } #edTexts .p-bottom { top: 72%; }
-#edTexts .s-S { font-size: clamp(9px, 1.6vh, 20px); } #edTexts .s-M { font-size: clamp(12px, 2.3vh, 28px); } #edTexts .s-L { font-size: clamp(16px, 3.4vh, 42px); }
+
 .edclip.aud { background: color-mix(in srgb, var(--info) 22%, var(--panel2)); }
 .edclip.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); z-index: 2; }
 .edclip b { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; } .edclip b span { color: var(--accent); }
@@ -881,7 +892,9 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
     <div id="edSrc"></div>
   </div>
   <div class="edview">
-    <div class="edstage"><div id="edBg"></div><video id="edVideo" playsinline preload="auto"></video><span id="edBadge" hidden></span><span id="edCap" hidden></span><div id="edTexts"></div>
+    <div class="edstage" id="edStage"><div id="edBg"></div><div id="edFrame"><video id="edVideo" playsinline preload="auto"></video></div>
+      <div id="edBox" data-drag="box" hidden title="Drag to move this clip; drag a corner to resize it"><i data-drag="box-nw"></i><i data-drag="box-ne"></i><i data-drag="box-sw"></i><i data-drag="box-se"></i></div>
+      <span id="edBadge" hidden></span><span id="edCap" class="plate" data-drag="cap" hidden></span><div id="edTexts"></div>
       <div id="edEmpty" class="hint">Nothing on the timeline yet</div></div>
     <div class="edrow" style="justify-content:center"><button class="btn" id="edPlay" type="button" title="Play / pause (Space)" aria-label="Play or pause">▶</button><span id="edTime">0:00.0 / 0:00.0</span>
       <button class="btn sm" id="edWatch" type="button" hidden></button></div>
@@ -1747,7 +1760,7 @@ dlg.addEventListener("close", () => {
 // (POST /api/clips) and kept in E.undo. The preview plays the source files in the browser: close to the render, not it.
 let E = null, clipFit = "blur";
 const edId = () => Math.random().toString(36).slice(2, 9);
-const r1 = x => Math.round(x * 10) / 10, clamp = (x, a, b) => Math.min(Math.max(x, a), b);
+const r1 = x => Math.round(x * 10) / 10, r3 = x => Math.round(x * 1000) / 1000, clamp = (x, a, b) => Math.min(Math.max(x, a), b);
 const tfmt = s => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 const edLen = c => c.len ?? c.end - c.start;  // a text has a length; clips and audio have a start and end in their file
 const edList = kind => ({clip: E.clips, aud: E.audio, txt: E.texts})[kind];
@@ -1766,7 +1779,7 @@ async function openEditor(id) {
   if (!p || p.origin !== "clips" || p.status === "uploaded") { history.replaceState(null, "", "/episodes"); return route(); }
   const keep = E && E.p.pageid === p.pageid ? {t: E.t, pps: E.clips.length ? E.pps : 0, tab: E.tab} : {};  // an empty timeline has no zoom worth keeping
   const item = c => ({id: edId(), file: c.file, title: c.title, uploader: c.uploader, site: c.site, url: c.url, length: c.length,
-                      start: c.start, end: c.end, fit: c.fit, volume: c.volume, caption: c.caption});
+                      start: c.start, end: c.end, fit: c.fit, volume: c.volume, caption: c.caption, crop: c.crop, box: c.box, cap: c.cap});
   if (E) clearTimeout(E.timer);
   E = {p, badges: p.badges, clips: p.clips.filter(c => c.use).map(item), audio: p.tracks.map(t => ({id: edId(), ...t})), texts: p.texts.map(t => ({id: edId(), ...t})),
        bin: [...new Map(p.clips.map(c => [c.file, c])).values()], sel: null, t: keep.t || 0, pps: keep.pps || 0, tab: keep.tab || "bin",
@@ -1791,9 +1804,9 @@ function closeEditor() {
 
 // ---- saving and history
 const edBody = () => ({pageid: E.p.pageid, title: $("#edName").value.trim() || E.p.yt_title, badges: E.badges,
-  clips: [...E.clips.map(({file, start, end, fit, volume, caption}) => ({file, use: true, start, end, fit, volume, caption})),
+  clips: [...E.clips.map(({file, start, end, fit, volume, caption, crop, box, cap}) => ({file, use: true, start, end, fit, volume, caption, crop, box, cap})),
           ...E.bin.filter(b => !E.clips.some(c => c.file === b.file)).map(b => ({file: b.file, use: false, start: b.start ?? 0, end: b.end || b.length}))],
-  audio: E.audio.map(({file, at, start, end, volume}) => ({file, at, start, end, volume})), texts: E.texts.map(({text, at, len, pos, size}) => ({text, at, len, pos, size}))});
+  audio: E.audio.map(({file, at, start, end, volume}) => ({file, at, start, end, volume})), texts: E.texts.map(({text, at, len, x, y, size}) => ({text, at, len, x, y, size}))});
 async function edSave() {
   if (!E || E.saved) return true;
   clearTimeout(E.timer);
@@ -1823,14 +1836,99 @@ function edLoad(play) {  // point the player at the clip under the playhead
   if (Math.abs(v.currentTime - local) > 0.05) v.currentTime = local;
   v.volume = Math.min(c.volume, 1); v.muted = !c.volume;
   const fit = c.fit || clipFit;
-  v.style.objectFit = fit === "blur" ? "contain" : "cover";
-  v.style.objectPosition = {"zoom-left": "0 50%", "zoom-right": "100% 50%"}[fit] || "50% 50%";
-  $("#edBg").style.backgroundImage = fit === "blur" ? `url("${edPoster(c.file)}")` : "";
-  $("#edBadge").textContent = "#" + (E.clips.length - i); $("#edCap").textContent = c.caption;
+  $("#edBg").style.backgroundImage = fit === "blur" || fit === "custom" ? `url("${edPoster(c.file)}")` : "";
+  $("#edBadge").textContent = "#" + (E.clips.length - i);
+  edFit();
   if (play) v.play().catch(() => {});
   edHead();
 }
 function edSeek(t) { E.t = clamp(t, 0, edTotal()); edLoad(E.playing); }
+// Where the clip under the playhead shows: its `crop` (fractions of its own picture) is fitted into a region of the
+// frame: the whole frame (blur: whole, else filled), or its `box` (custom: filled). #edFrame is the visible part; the
+// video inside it is sized and offset so the crop lands where the render puts it.
+const DEF_CAP = {x: 0.5, y: 0.72, size: 84};
+function edCurrent() { const [i] = edAt(E.t); return E.clips[i]; }
+function edFit() {
+  const st = $("#edStage"), fr = $("#edFrame"), v = $("#edVideo"), c = E && !E.watching && edCurrent();
+  st.style.setProperty("--k", st.clientHeight / 1920);
+  const reset = () => { Object.assign(fr.style, {left: "0", top: "0", width: "100%", height: "100%"}); Object.assign(v.style, {left: "0", top: "0", width: "100%", height: "100%", objectFit: "contain"}); };
+  if (!c) { reset(); $("#edBox").hidden = true; $("#edCap").hidden = true; return; }
+  const fit = c.fit || clipFit, crop = c.crop || [0, 0, 1, 1], box = fit === "custom" ? (c.box || [0, 0, 1, 1]) : [0, 0, 1, 1];
+  const SW = st.clientWidth, SH = st.clientHeight, vw = v.videoWidth, vh = v.videoHeight;
+  const R = {x: box[0] * SW, y: box[1] * SH, w: box[2] * SW, h: box[3] * SH};
+  if (vw) {
+    const cw = vw * crop[2], ch = vh * crop[3], s = fit === "blur" ? Math.min(R.w / cw, R.h / ch) : Math.max(R.w / cw, R.h / ch);
+    let ox = (R.w - cw * s) / 2; const oy = (R.h - ch * s) / 2;
+    if (fit === "zoom-left") ox = 0; else if (fit === "zoom-right") ox = R.w - cw * s;
+    const L = Math.max(R.x, R.x + ox), T = Math.max(R.y, R.y + oy), Rt = Math.min(R.x + R.w, R.x + ox + cw * s), B = Math.min(R.y + R.h, R.y + oy + ch * s);
+    Object.assign(fr.style, {left: L + "px", top: T + "px", width: Math.max(0, Rt - L) + "px", height: Math.max(0, B - T) + "px"});
+    Object.assign(v.style, {objectFit: "fill", width: vw * s + "px", height: vh * s + "px",
+                            left: R.x + ox - vw * crop[0] * s - L + "px", top: R.y + oy - vh * crop[1] * s - T + "px"});
+  } else reset();
+  const bx = $("#edBox");
+  bx.hidden = fit !== "custom";
+  if (fit === "custom") {
+    Object.assign(bx.style, {left: box[0] * 100 + "%", top: box[1] * 100 + "%", width: box[2] * 100 + "%", height: box[3] * 100 + "%"});
+    bx.classList.toggle("sel", E.sel?.kind === "clip" && E.sel.id === c.id);
+  }
+  const cp = $("#edCap"), cap = c.cap || DEF_CAP;
+  cp.hidden = !c.caption;
+  if (c.caption) {
+    if (cp.dataset.text !== c.caption) { cp.dataset.text = c.caption; cp.innerHTML = esc(c.caption) + `<i class="rs" data-drag="capsize"></i>`; }
+    Object.assign(cp.style, {left: cap.x * 100 + "%", top: cap.y * 100 + "%", fontSize: `calc(var(--k) * ${cap.size}px)`});
+    cp.classList.toggle("sel", E.sel?.kind === "clip" && E.sel.id === c.id);
+  }
+}
+function edTextsDraw() {  // the text pieces on screen now, as plates you can drag (and resize by the corner)
+  const box = $("#edTexts"), on = E.watching ? [] : E.texts.filter(x => x.text && E.t >= x.at && E.t < x.at + x.len), sig = on.map(x => x.id + x.text).join("|");
+  if (box.dataset.sig !== sig) { box.dataset.sig = sig; box.innerHTML = on.map(x => `<span class="plate" data-drag="txt:${x.id}">${esc(x.text)}<i class="rs" data-drag="txtsize:${x.id}"></i></span>`).join(""); }
+  box.querySelectorAll(".plate").forEach(el => {
+    const x = E.texts.find(t => "txt:" + t.id === el.dataset.drag); if (!x) return;
+    Object.assign(el.style, {left: x.x * 100 + "%", top: x.y * 100 + "%", fontSize: `calc(var(--k) * ${x.size}px)`});
+    el.classList.toggle("sel", E.sel?.kind === "txt" && E.sel.id === x.id);
+  });
+}
+// dragging on the preview: a clip's box (move, or resize by a corner), a caption or a text plate (move, or resize by its corner)
+let edDrag = null;
+$("#edStage").addEventListener("pointerdown", e => {
+  const h = e.target.closest("[data-drag]"); if (!h || !E || E.watching) return;
+  const [kind, id] = h.dataset.drag.split(":"), st = $("#edStage").getBoundingClientRect();
+  let obj, key;
+  if (kind.startsWith("txt")) { obj = E.texts.find(t => t.id === id); key = null; E.sel = obj && {kind: "txt", id}; }
+  else { obj = edCurrent(); if (!obj) return; E.sel = {kind: "clip", id: obj.id};
+         key = kind.startsWith("cap") ? "cap" : "box"; obj[key] = obj[key] || (key === "cap" ? {...DEF_CAP} : [0, 0, 1, 1]); }
+  if (!obj) return;
+  e.preventDefault();
+  if (E.playing) edPause();
+  const target = key ? obj[key] : obj;
+  edDrag = {kind, target, st, x0: e.clientX, y0: e.clientY, orig: JSON.parse(JSON.stringify(key === "box" ? target : {x: target.x, y: target.y, size: target.size})),
+            before: edSnap(), moved: false};
+  edInspector(); edFit(); edTextsDraw();
+});
+document.addEventListener("pointermove", e => {
+  const d = edDrag; if (!d) return;
+  const dx = (e.clientX - d.x0) / d.st.width, dy = (e.clientY - d.y0) / d.st.height, o = d.orig, t = d.target;
+  d.moved = d.moved || Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) > 2;
+  if (d.kind === "box") { t[0] = r3(o[0] + dx); t[1] = r3(o[1] + dy); }
+  else if (d.kind.startsWith("box-")) {
+    const c = d.kind.slice(4), min = 0.05;  // the corner moves, the opposite corner stays
+    let [x, y, w, h] = o;
+    if (c.includes("w")) { const nx = Math.min(x + dx, x + w - min); w = x + w - nx; x = nx; } else w = Math.max(min, w + dx);
+    if (c.includes("n")) { const ny = Math.min(y + dy, y + h - min); h = y + h - ny; y = ny; } else h = Math.max(min, h + dy);
+    t.splice(0, 4, r3(x), r3(y), r3(w), r3(h));
+  }
+  else if (d.kind === "txt" || d.kind === "cap") { t.x = r3(clamp(o.x + dx, 0, 1)); t.y = r3(clamp(o.y + dy, 0, 1)); }
+  else t.size = Math.round(clamp(o.size * (1 + (dx * d.st.width + dy * d.st.height) / 200), 30, 240));  // a corner: bigger letters
+  edFit(); edTextsDraw();
+});
+document.addEventListener("pointerup", () => {
+  const d = edDrag; if (!d) return;
+  edDrag = null;
+  if (d.moved) { E.undo.push(d.before); if (E.undo.length > 200) E.undo.shift(); E.redo = []; edTouch(); }
+  edDraw();
+});
+new ResizeObserver(() => { if (E) { edFit(); edTextsDraw(); } }).observe($("#edStage"));
+$("#edVideo").addEventListener("loadedmetadata", () => E && edFit());
 function edPlay() {
   if (E.watching) edWatch();
   if (!E.clips.length) return;
@@ -1867,8 +1965,7 @@ function edHead(follow) {
   const x = E.t * E.pps, sc = $("#edScroll");
   $("#edHead").style.left = x + "px";
   $("#edTime").textContent = `${tfmt(E.t)} / ${tfmt(edTotal())}`;
-  const on = E.watching ? [] : E.texts.filter(x => x.text && E.t >= x.at && E.t < x.at + x.len), sig = on.map(x => x.id + x.text + x.pos + x.size).join("|");
-  if ($("#edTexts").dataset.sig !== sig) { $("#edTexts").dataset.sig = sig; $("#edTexts").innerHTML = on.map(x => `<span class="p-${x.pos} s-${x.size}">${esc(x.text)}</span>`).join(""); }
+  edTextsDraw();
   if (follow && (x < sc.scrollLeft || x > sc.scrollLeft + sc.clientWidth - 40)) sc.scrollLeft = x - 80;
 }
 function edWatch() {  // the rendered file instead of the timeline preview, and back
@@ -1937,9 +2034,15 @@ function edInspector() {
     <span class="hint">${esc([c.uploader, c.site].filter(Boolean).join(" · "))}${c.url ? ` · <a href="${esc(c.url)}" target="_blank" rel="noopener">source ↗</a>` : ""}</span>
     <div class="edtwo">${num("start", c.start, c.length, "Starts at (s)")}${num("end", c.end, c.length, "Ends at (s)")}</div>
     <span class="hint">Plays ${r1(edLen(c))}s of the ${r1(c.length)}s fetched. Drag the clip's edges, or press I and O at the playhead.</span>
-    <label>Fills the screen <select data-f="fit">${[["", "As the channel is set"], ["blur", "Whole clip, blurred edges"], ["zoom", "Zoomed in: middle"], ["zoom-left", "Zoomed in: left side"], ["zoom-right", "Zoomed in: right side"]].map(([v, t]) => `<option value="${v}" ${v === c.fit ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+    <label>Fills the screen <select data-f="fit">${[["", "As the channel is set"], ["blur", "Whole clip, blurred edges"], ["zoom", "Zoomed in: middle"], ["zoom-left", "Zoomed in: left side"], ["zoom-right", "Zoomed in: right side"], ["custom", "Placed by hand: any size and place"]].map(([v, t]) => `<option value="${v}" ${v === c.fit ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+    ${c.fit === "custom" ? `<span class="hint">Drag the clip on the preview to move it; drag a corner to resize. Or type it, as % of the screen:</span>
+      <div class="edfour">${["Left", "Top", "Width", "Height"].map((t, k) => `<label>${t}<input type="number" data-f="box${k}" step="1" value="${Math.round((c.box || [0, 0, 1, 1])[k] * 100)}"></label>`).join("")}</div>` : ""}
+    <span class="hint">Crop: trim the clip's own picture, in % from each edge</span>
+    <div class="edfour">${["Left", "Right", "Top", "Bottom"].map((t, k) => { const r = c.crop || [0, 0, 1, 1], v = [r[0], 1 - r[0] - r[2], r[1], 1 - r[1] - r[3]][k];
+      return `<label>${t}<input type="number" data-f="crop${k}" min="0" max="90" step="1" value="${Math.round(v * 100)}"></label>`; }).join("")}</div>
     ${vol(c.volume)}
-    <label>Caption <small>a line shown on this clip, wherever you move it</small><input data-f="caption" maxlength="120" value="${esc(c.caption)}" placeholder="None"></label>
+    <label>Caption <small>a line shown on this clip; drag it on the preview to place it</small><input data-f="caption" maxlength="120" value="${esc(c.caption)}" placeholder="None"></label>
+    ${c.caption ? `<label>Caption size <output>${(c.cap || DEF_CAP).size}</output><input type="range" data-f="capsize" min="30" max="240" step="2" value="${(c.cap || DEF_CAP).size}"></label>` : ""}
     <div class="btns"><button class="btn" data-act="split" type="button">Split at playhead</button><button class="btn" data-act="dup" type="button">Duplicate</button><button class="btn danger" data-act="del" type="button">Remove</button></div>`
   : a ? `
     <h5>Audio</h5><b class="ednm">${esc(a.title || a.file)}</b>
@@ -1951,8 +2054,9 @@ function edInspector() {
   : tx ? `
     <h5>Text</h5>
     <label>Words<textarea data-f="text" rows="3" maxlength="200" placeholder="What it says">${esc(tx.text)}</textarea></label>
-    <div class="edtwo"><label>Where <select data-f="pos">${opts([["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], tx.pos)}</select></label>
-      <label>Size <select data-f="size">${opts([["S", "Small"], ["M", "Medium"], ["L", "Large"]], tx.size)}</select></label></div>
+    <label>Size <output>${tx.size}</output><input type="range" data-f="tsize" min="30" max="240" step="2" value="${tx.size}"></label>
+    <div class="btns"><span class="hint" style="align-self:center">Place:</span><button class="btn sm" data-act="ptop" type="button">Top</button><button class="btn sm" data-act="pmid" type="button">Middle</button><button class="btn sm" data-act="pbot" type="button">Bottom</button></div>
+    <span class="hint">Or drag it on the preview; drag its corner to make it bigger or smaller.</span>
     <div class="edtwo">${num("at", tx.at, 3600, "Appears at (s)")}${num("len", tx.len, 600, "Stays for (s)")}</div>
     <span class="hint">Stays at this time whatever plays under it; drag it along the track, drag its edges to change how long it shows. A clip's own caption moves with the clip instead.</span>
     <div class="btns"><button class="btn danger" data-act="del" type="button">Remove</button></div>`
@@ -1999,7 +2103,7 @@ function edSplit() {
   const g = edTarget(); if (!g) return;
   edDo(() => {
     if (g.a) { const b = {...g.a, id: edId(), start: g.local, at: E.t}; g.a.end = g.local; E.audio.push(b); E.sel = {kind: "aud", id: b.id}; }
-    else { const b = {...g.c, id: edId(), start: g.local}; g.c.end = g.local; E.clips.splice(g.i + 1, 0, b); E.sel = {kind: "clip", id: b.id}; }
+    else { const b = {...structuredClone(g.c), id: edId(), start: g.local}; g.c.end = g.local; E.clips.splice(g.i + 1, 0, b); E.sel = {kind: "clip", id: b.id}; }
   });
 }
 function edTrimHere(edge) {  // I / O
@@ -2013,12 +2117,12 @@ function edRemove() {
 }
 function edAddText() {
   if (!E.clips.length) return;
-  edDo(() => { const x = {id: edId(), text: "", at: r1(E.t), len: Math.max(1, Math.min(3, r1(edTotal() - E.t))), pos: "bottom", size: "M"}; E.texts.push(x); E.sel = {kind: "txt", id: x.id}; });
+  edDo(() => { const x = {id: edId(), text: "", at: r1(E.t), len: Math.max(1, Math.min(3, r1(edTotal() - E.t))), x: 0.5, y: 0.72, size: 84}; E.texts.push(x); E.sel = {kind: "txt", id: x.id}; });
   $("#edInsp textarea")?.focus();
 }
 function edDup() {
   const c = E.sel?.kind === "clip" && E.clips.find(x => x.id === E.sel.id); if (!c) return;
-  edDo(() => { const b = {...c, id: edId()}; E.clips.splice(E.clips.indexOf(c) + 1, 0, b); E.sel = {kind: "clip", id: b.id}; });
+  edDo(() => { const b = {...structuredClone(c), id: edId()}; E.clips.splice(E.clips.indexOf(c) + 1, 0, b); E.sel = {kind: "clip", id: b.id}; });
 }
 function edAdd(v) {  // from the bin or your media, onto the timeline
   if (E.tab === "audio") {
@@ -2086,7 +2190,17 @@ $("#edInsp").onchange = e => {
   const x = edSel(), v = e.target.value;
   edDo(() => {
     if (f === "badges") E.badges = e.target.checked;
-    else if (["fit", "caption", "text", "pos", "size"].includes(f)) x[f] = v.trim();
+    else if (f === "fit") { x.fit = v; if (v === "custom" && !x.box) x.box = [0.05, 0.3, 0.9, 0.4]; }
+    else if (["caption", "text"].includes(f)) x[f] = v.trim();
+    else if (f === "tsize") x.size = +v;
+    else if (f === "capsize") x.cap = {...(x.cap || DEF_CAP), size: +v};
+    else if (f.startsWith("box")) { x.box = x.box || [0, 0, 1, 1]; x.box[+f[3]] = (+v || 0) / 100; x.box[2] = Math.max(0.05, x.box[2]); x.box[3] = Math.max(0.05, x.box[3]); }
+    else if (f.startsWith("crop")) {  // four trims -> [x, y, w, h], leaving at least a tenth of the picture
+      const t = [...document.querySelectorAll("#edInsp [data-f^=crop]")].map(i => clamp((+i.value || 0) / 100, 0, 0.9));
+      const w = Math.max(0.1, 1 - t[0] - t[1]), h = Math.max(0.1, 1 - t[2] - t[3]);
+      x.crop = [Math.min(t[0], 1 - w), Math.min(t[2], 1 - h), w, h].map(r3);
+      if (x.crop.join() === "0,0,1,1") x.crop = null;
+    }
     else if (f === "len") x.len = r1(clamp(+v || 0, 0.5, 600));
     else if (f === "volume") x.volume = +v;
     else if (f === "at") x.at = r1(Math.max(0, +v || 0));
@@ -2094,8 +2208,21 @@ $("#edInsp").onchange = e => {
     else if (f === "end") x.end = r1(clamp(+v || 0, x.start + 0.5, x.length));
   });
 };
-$("#edInsp").oninput = e => { if (e.target.dataset.f === "volume") e.target.previousElementSibling.textContent = Math.round(e.target.value * 100) + "%"; };
-$("#edInsp").onclick = e => { const a = e.target.dataset.act; if (a) ({split: edSplit, dup: edDup, del: edRemove})[a](); };
+$("#edInsp").oninput = e => {
+  const f = e.target.dataset.f;
+  if (f === "volume") e.target.previousElementSibling.textContent = Math.round(e.target.value * 100) + "%";
+  if (f === "tsize" || f === "capsize") {  // show the size change live; it's saved on release (change)
+    e.target.previousElementSibling.textContent = e.target.value;
+    const x = edSel(); if (!x) return;
+    if (f === "tsize") x.size = +e.target.value; else x.cap = {...(x.cap || DEF_CAP), size: +e.target.value};
+    edFit(); edTextsDraw();
+  }
+};
+$("#edInsp").onclick = e => {
+  const a = e.target.dataset.act; if (!a) return;
+  if (a[0] === "p") { const x = edSel(); edDo(() => { x.x = 0.5; x.y = {ptop: 0.22, pmid: 0.5, pbot: 0.72}[a]; }); return; }
+  ({split: edSplit, dup: edDup, del: edRemove})[a]();
+};
 $("#edTabs").onclick = e => { if (e.target.dataset.tab) { E.tab = e.target.dataset.tab; $("#edFind").value = ""; edBin(); } };
 $("#edFind").oninput = edBin;
 $("#edSrc").onclick = e => {

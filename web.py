@@ -313,12 +313,36 @@ def pages(pageid=None):
     return rows
 
 
+def text_place(t):
+    """Where a text or caption sits and how big: x, y (its centre, fractions of the frame) and size (letter height in
+    pixels). Older pieces only had a preset place and S/M/L size."""
+    size = t.get("size")
+    return dict(x=float(t.get("x", 0.5)), y=float(t["y"]) if "y" in t else rw.TEXT_POS.get(t.get("pos"), 1380) / rw.H,
+                size=int(size) if isinstance(size, (int, float)) else rw.TEXT_SIZES.get(size, 84))
+
+
+def rect(v):
+    """[x, y, w, h] as fractions, from the editor: kept sane (some of it on screen, not vanishingly small), else None."""
+    try:
+        x, y, w, h = [float(a) for a in v]
+    except (TypeError, ValueError):
+        return None
+    w, h = min(max(w, 0.05), 3), min(max(h, 0.05), 3)
+    return [round(min(max(x, -w + 0.05), 0.95), 4), round(min(max(y, -h + 0.05), 0.95), 4), round(w, 4), round(h, 4)]
+
+
+def placed(t):
+    """A text or caption's place from the editor, checked."""
+    return {"x": round(min(max(float(t.get("x", 0.5)), 0), 1), 4), "y": round(min(max(float(t.get("y", 0.72)), 0), 1), 4),
+            "size": int(min(max(float(t.get("size") or 84), 30), 240))}
+
+
 def meta_summary(pid, m):
     return dict(yt_title=m["title"], script=m["script"], yt_description=m["yt_description"], potential_info=m.get("potential"),
                      narration=m.get("narration", "kokoro"), music=m.get("music", "brand"), music_volume=m.get("music_volume"),
                      ai=m.get("ai") or m.get("gemini"),
                      audio_credits=m.get("audio_credits") or {}, quiz=m.get("quiz") or [], badges=m.get("badges", True), stale=bool(m.get("stale")),
-                     texts=[dict(text=t["text"], at=t["at"], len=round(t["end"] - t["at"], 2), pos=t["pos"], size=t["size"]) for t in m.get("texts") or []],
+                     texts=[dict(text=t["text"], at=t["at"], len=round(t["end"] - t["at"], 2), **text_place(t)) for t in m.get("texts") or []],
                      tracks=[dict(file=Path(t["path"]).name, title=t.get("title", ""), length=t.get("duration") or 0, at=t["at"], start=t["start"],
                                   end=t["end"], volume=t.get("volume", 1)) for t in m.get("audio") or [] if Path(t["path"]).exists()],
                      parts=[[i["name"], i["text"]] for i in m.get("items") or []],  # guess / on this day: what it shows
@@ -326,7 +350,8 @@ def meta_summary(pid, m):
                                  url=c.get("url", ""), seconds=c.get("seconds") or c.get("duration") or 0, views=c.get("views", 0),
                                  start=c.get("start") or 0, end=c.get("end") or c.get("seconds") or c.get("duration") or 0,
                                  length=max(c.get("duration") or 0, c.get("seconds") or 0), fit=c.get("fit") or "",
-                                 volume=c.get("volume", 1), caption=c.get("caption", ""), use=c.get("use", True)) for c in m.get("clips") or [] if Path(c["path"]).exists()],
+                                 volume=c.get("volume", 1), caption=c.get("caption", ""), use=c.get("use", True),
+                                 crop=c.get("crop"), box=c.get("box"), cap=text_place(c.get("cap") or {})) for c in m.get("clips") or [] if Path(c["path"]).exists()],
                      images=[{k: v for k, v in i.items() if k != "path"} | {"credit": rw.credit(i), "file": Path(i["path"]).name}
                              for i in m["images"]])
 
@@ -634,7 +659,8 @@ class H(BaseHTTPRequestHandler):
             elif self.path == "/api/clip_new":  # body: {"title"} -> an empty clip video to open in the editor
                 return self.send(200, {"ok": True, "pageid": rw.clip_new(rw.db(), str(body.get("title", "")))})
             elif self.path == "/api/clips":  # the editor's state. body: {"pageid", "title", "badges", "clips": [{"file", "use", "start", "end",
-                # "fit", "volume", "caption"}] in playing order (a file may come twice: two cuts of it), "audio": [{"file", "at", "start", "end", "volume"}]}
+                # "fit", "volume", "caption", "crop", "box", "cap"}] in playing order (a file may come twice: two cuts of it),
+                # "audio": [{"file", "at", "start", "end", "volume"}], "texts": [{"text", "at", "len", "x", "y", "size"}]}
                 meta = rw.WORK / str(int(body["pageid"])) / "meta.json"
                 m = json.loads(meta.read_text())
 
@@ -661,7 +687,10 @@ class H(BaseHTTPRequestHandler):
                     t = span(c, new)
                     order.append(c | t | {"use": bool(new.get("use")), "seconds": round(t["end"] - t["start"], 2),
                                           "fit": new.get("fit") if new.get("fit") in rw.CLIP_FITS else "",
-                                          "volume": min(max(float(new.get("volume", 1)), 0), 2), "caption": str(new.get("caption") or "").strip()[:120]})
+                                          "volume": min(max(float(new.get("volume", 1)), 0), 2), "caption": str(new.get("caption") or "").strip()[:120],
+                                          "crop": (lambda r: r if r and r != [0, 0, 1, 1] and all(0 <= v <= 1 for v in r) else None)(rect(new.get("crop"))),
+                                          "box": rect(new.get("box")) if new.get("fit") == "custom" else None,
+                                          "cap": placed(new["cap"]) if isinstance(new.get("cap"), dict) else None})
                 listed = {str(new["file"]) for new in body["clips"]}
                 had = {Path(t["path"]).name: t for t in m.get("audio") or []}
                 audio = [(t := source("audio", str(new["file"]), had)) | span(t, new)
@@ -672,7 +701,7 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError("give it a title (up to 100 characters)")
                 texts = [{"text": str(t.get("text") or "").strip()[:200], "at": round(max(float(t.get("at") or 0), 0), 2),
                           "end": round(max(float(t.get("at") or 0), 0) + max(float(t.get("len") or 0), 0.5), 2),
-                          "pos": t.get("pos") if t.get("pos") in rw.TEXT_POS else "bottom", "size": t.get("size") if t.get("size") in rw.TEXT_SIZES else "M"}
+                          **placed(t)}
                          for t in body.get("texts") or [] if str(t.get("text") or "").strip()]
                 m.update(title=title, badges=bool(body.get("badges", m.get("badges", True))), audio=audio, texts=texts, stale=True,
                          clips=order + [c | {"use": False} for f, c in have.items() if f not in listed])  # a clip the page didn't list stays, unused
@@ -876,6 +905,7 @@ class H(BaseHTTPRequestHandler):
                     if row["status"] == "uploaded":
                         kept += 1
                         continue
+                    rw.media_forget(pid)  # its media files no longer say they're used in it
                     shutil.rmtree(rw.WORK / str(pid), ignore_errors=True)
                     video = Path(row["video_path"] or "")
                     if row["video_path"] and video.resolve().parent == rw.OUT.resolve():  # only files we rendered

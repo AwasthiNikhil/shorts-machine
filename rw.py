@@ -3028,7 +3028,9 @@ def strip_voice(src, dest):
 
 CLIP_SECONDS = (4, 30)  # a clip is used whole, so it has to be this short
 CLIP_PART = (15, 30)  # from a longer video (clip_find "videos"): seconds used, and seconds fetched so the editor can widen it
-CLIP_FITS = ("blur", "zoom", "zoom-left", "zoom-right")  # whole over a blurred copy, or filling the frame (which part is kept)
+CLIP_FITS = ("blur", "zoom", "zoom-left", "zoom-right", "custom")  # whole over a blurred copy, filling the frame (which part
+# is kept), or "custom": in the clip's own `box` [x, y, w, h] (fractions of the frame) over a blurred copy. Any fit can
+# first `crop` the source to [x, y, w, h] (fractions of the source picture).
 
 
 def best_part(info):
@@ -3169,15 +3171,36 @@ TEXT_SIZES = {"S": 56, "M": 84, "L": 124}
 TEXT_POS = {"top": 420, "middle": 960, "bottom": 1380}  # the middle of the plate, pixels down the frame
 
 
-def text_plate(d, text, pos="bottom", size="M"):
-    """Draw a line or two of text on a dark plate, so it reads over anything."""
-    f, ls = fit_lines(text, "display", TEXT_SIZES.get(size, 84), W - 200, 4)
+def text_plate(d, text, pos="bottom", size="M", x=None, y=None):
+    """Draw a line or two of text on a dark plate, so it reads over anything. Placed by its centre: x, y as fractions of
+    the frame (dragged in the editor), else a preset `pos`; `size` is the letter height in pixels, or S/M/L.
+    The plate is kept inside the frame."""
+    px = int(size) if isinstance(size, (int, float)) else TEXT_SIZES.get(size, 84)
+    f, ls = fit_lines(text, "display", px, W - 200, 4)
     hgt = int(len(ls) * f.size * 1.2) + 50
     wid = min(W - 120, int(max(f.getlength(l) for l in ls)) + 90)
-    top = TEXT_POS.get(pos, 1380) - hgt // 2
-    d.rounded_rectangle(((W - wid) // 2, top, (W + wid) // 2, top + hgt), 30, fill=(*bytes.fromhex(C["bg"][1:]), 215))
+    cx, cy = W * (0.5 if x is None else float(x)), (TEXT_POS.get(pos, 1380) if y is None else H * float(y))
+    left, top = int(min(max(cx - wid / 2, 20), W - 20 - wid)), int(min(max(cy - hgt / 2, 20), H - 20 - hgt))
+    d.rounded_rectangle((left, top, left + wid, top + hgt), 30, fill=(*bytes.fromhex(C["bg"][1:]), 215))
     for i, l in enumerate(ls):
-        d.text((W // 2, top + 25 + i * f.size * 1.2), l, font=f, fill=C["text"], anchor="mt")
+        d.text((left + wid / 2, top + 25 + i * f.size * 1.2), l, font=f, fill=C["text"], anchor="mt")
+
+
+def clip_graph(fit, crop=None, box=None):
+    """The ffmpeg filter that turns input 0 into the frame-sized [v0]: crop the source if asked, then place it."""
+    cx, cy, cw, ch = [float(v) for v in (crop or (0, 0, 1, 1))]
+    src = (f"[0:v]crop=trunc(iw*{cw:.4f}/2)*2:trunc(ih*{ch:.4f}/2)*2:trunc(iw*{cx:.4f}):trunc(ih*{cy:.4f})"
+           if (cx, cy, cw, ch) != (0, 0, 1, 1) else "[0:v]null")
+    fill = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
+    if fit in ("blur", "custom"):
+        if fit == "blur":
+            fg, at = f"scale={W}:{H}:force_original_aspect_ratio=decrease", "(W-w)/2:(H-h)/2"
+        else:  # its own box: the (cropped) clip fills it, trimmed to the box's shape rather than stretched
+            bx, by, bw, bh = [float(v) for v in (box or (0, 0, 1, 1))]
+            bw, bh = max(2, round(bw * W / 2) * 2), max(2, round(bh * H / 2) * 2)
+            fg, at = f"scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh}", f"{round(bx * W)}:{round(by * H)}"
+        return f"{src},split=2[s1][s2];[s1]{fill},boxblur=24[bg];[s2]{fg}[fg];[bg][fg]overlay={at}[v0];"
+    return f"{src},{fill}:{ {'zoom-left': '0', 'zoom-right': 'iw-ow'}.get(fit, '(iw-ow)/2')}:0[v0];"
 
 
 def clip_add(con, ep, urls, part=None):
@@ -3245,7 +3268,8 @@ def render_clips(con, m):
         label, a = f"#{len(clips) - k}" if badges else "", float(c.get("start") or 0)
         secs = float(c.get("end") or c.get("seconds") or c.get("duration")) - a
         fit, vol, cap = c.get("fit") or BRAND.get("clip_fit") or "blur", float(c.get("volume", 1)), (c.get("caption") or "").strip()
-        key = hashlib.sha1(json.dumps([c["path"], label, a, secs, fit, vol, cap, strip, C["accent"], C["bg"], C["text"]]).encode()).hexdigest()[:12]
+        place = [c.get("crop"), c.get("box"), c.get("cap")]  # where and how big: set by hand in the editor
+        key = hashlib.sha1(json.dumps([c["path"], label, a, secs, fit, vol, cap, strip, C["accent"], C["bg"], C["text"], *place]).encode()).hexdigest()[:12]
         seg = work / f"seg-{key}.mp4"
         segs.append(seg)
         print(f"  {label or k + 1}: {c['title'][:60]}")
@@ -3258,7 +3282,8 @@ def render_clips(con, m):
             d.rounded_rectangle((40, 130, 40 + int(big.getlength(label)) + 60, 330), 28, fill=C["accent"])
             d.text((70, 230), label, font=big, fill=C["bg"], anchor="lm")
         if cap:
-            text_plate(d, cap)
+            cp = c.get("cap") or {}
+            text_plate(d, cap, "bottom", cp.get("size", "M"), cp.get("x"), cp.get("y"))
         over.save(work / "over.png")
         probe = subprocess.run([ff, "-hide_banner", "-i", c["path"]], capture_output=True, text=True).stderr
         has = "Audio:" in probe and vol > 0
@@ -3270,12 +3295,8 @@ def render_clips(con, m):
                 strip_voice(c["path"], clean)
             sound = ["-ss", str(a), "-i", str(clean), "-map", "2:a"]
         tmp = seg.with_suffix(".part.mp4")
-        fill = f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
         r = subprocess.run([ff, "-y", "-loglevel", "error", "-ss", str(a), "-i", c["path"], "-loop", "1", "-i", str(work / "over.png"), *sound[:-2],
-                            "-filter_complex",
-                            (f"{fill},boxblur=24[bg];[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];"
-                             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[v0];" if fit == "blur" else
-                             f"{fill}:{ {'zoom-left': '0', 'zoom-right': 'iw-ow'}.get(fit, '(iw-ow)/2')}:0[v0];") +
+                            "-filter_complex", clip_graph(fit, c.get("crop"), c.get("box")) +
                             f"[v0][1:v]overlay=0:0:shortest=1,fps={FPS},format=yuv420p[v]",
                             "-map", "[v]", *sound[-2:], *(["-af", f"volume={vol}"] if has and vol != 1 else []),
                             "-t", str(secs), "-shortest", "-c:v", "libx264", "-preset", "medium", "-crf", "20",
@@ -3301,7 +3322,7 @@ def render_clips(con, m):
         ins, graph, v = [], "", "0:v"
         for i, t in enumerate(texts):
             plate = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            text_plate(ImageDraw.Draw(plate), t["text"].strip(), t.get("pos"), t.get("size"))
+            text_plate(ImageDraw.Draw(plate), t["text"].strip(), t.get("pos"), t.get("size"), t.get("x"), t.get("y"))
             plate.save(work / f"text-{i}.png")
             ins += ["-i", str(work / f"text-{i}.png")]
             graph += f"[{v}][{i + 1}:v]overlay=enable='between(t,{t['at']},{t['end']})'[v{i}];"
