@@ -170,6 +170,13 @@ the quiz keeps its parts in meta `items` (name, text, image if any), edited in t
 - **word** (`make_word`): the typed word, else Wiktionary's word of the day (featured feed); the English entry's plain
   text goes to the writer's model for a meaning, an origin and an example. An origin naming a capitalised word or year
   the entry doesn't have is dropped. No pictures: `render_word()` reveals the sections as they are read.
+- **essay** (`make_essay`): the one long-form 16:9 format (a channel with `video_type: "essay"` gets `W, H` = 1920×1080
+  at import; Shower Philosophy, `workspaces/shower-philosophy`, uses it). `research()` plus two `research_web()` rounds,
+  then the writer's model writes ~30 paragraphs of 30-45 words with a picture description each (`ESSAY_PROMPT`; length
+  from `max_seconds`, aim 90% of it, at `ESSAY_WPS`). Each paragraph's picture is drawn 1280×720 if the picture model is
+  installed (~50 s each), else an Openverse/Commons photo. `render_essay()`: full-frame pictures with slow zoom/drift and
+  cross-fades, the spoken phrase along the bottom with the current word lit (word times come from `voice_scenes()`,
+  which keeps each line's `tts()` timings in the scene's `words`).
 
 ## Conventions that matter
 - **No video from model memory:** research must come from sources actually read; if research has no answer to a

@@ -51,7 +51,7 @@ if (ROOT / "library").is_dir() and not MEDIA.exists():  # it was library/ (video
     MEDIA.mkdir()
     (ROOT / "library").rename(LIBRARY)
 API = "https://en.wikipedia.org/w/api.php"
-W, H, FPS = 1080, 1920, 30
+W, H, FPS = (1920, 1080, 30) if BRAND.get("video_type") == "essay" else (1080, 1920, 30)  # essays are long-form 16:9; the rest Shorts
 PX, PY, PW, PH = 40, 440, 1000, 1000  # image panel
 
 
@@ -2687,12 +2687,12 @@ IMAGE_READY = ROOT / "data" / "image_model_ready"  # written after the first pic
 DRAWING = WS / "data" / "drawing"  # each picture's in-progress steps, shown in the studio console while it's drawn
 
 
-def generate_image(prompt, dest, size=768, show=False, preview=None):
+def generate_image(prompt, dest, size=768, show=False, preview=None, height=None):
     """Draw a picture with the model on this Mac. With preview=<name>, the model saves the picture after each of its
     steps and a console line points at each one, so the studio shows it sharpening (one thumbnail per picture)."""
     import subprocess
     cmd = [str(IMAGE_BIN / "mflux-generate"), "--model", IMAGE_MODEL, "--base-model", "schnell", "--steps", "4",
-           "--width", str(size), "--height", str(size), "--low-ram", "--prompt", prompt, "--output", str(dest)]
+           "--width", str(size), "--height", str(height or size), "--low-ram", "--prompt", prompt, "--output", str(dest)]
     steps_dir = DRAWING / preview if preview else None
     if steps_dir:
         cmd += ["--stepwise-image-output-dir", str(steps_dir)]
@@ -3548,7 +3548,7 @@ def voice_scenes(work, steps, said):
     audio, scenes, at = [], [], 0
     for kind, q, line, quiet, sound in steps:
         if line and line not in said:
-            tts(line, work / "part.wav")
+            said.setdefault("words", {})[line] = tts(line, work / "part.wav")[0]
             wav, sr = sf.read(work / "part.wav", dtype="float32")
             (work / "part.wav").unlink()
             wav = wav.mean(1) if wav.ndim > 1 else wav
@@ -3560,7 +3560,8 @@ def voice_scenes(work, steps, said):
         if sound == "chime":
             wav[:int(sr * 0.4)] += beep(1320, 0.4)
         audio.append(wav)
-        scenes.append(dict(kind=kind, q=q, start=at / sr, end=(at + len(wav)) / sr))
+        scenes.append(dict(kind=kind, q=q, start=at / sr, end=(at + len(wav)) / sr,
+                           words=[[w, a + at / sr, b + at / sr] for w, a, b in said.get("words", {}).get(line) or []]))
         at += len(wav)
     sf.write(work / "voice.wav", np.concatenate(audio), sr)
     return scenes
@@ -4034,12 +4035,193 @@ def render_word(m, scenes, audio_path, duration, out_path, frame_at=None):
     render_scenes(scenes, lambda s, t: card(s["kind"], s["q"]).copy(), audio_path, duration, out_path, frame_at)
 
 
+# ---------- essays: long-form 16:9 reflections on an idea, a drawn picture per paragraph, the words on screen ----------
+ESSAY_PROMPT = """Write the narration for a calm, reflective long-form YouTube video (about {minutes} minutes) on: "{topic}"
+It explores a philosophical idea or a "shower thought". Open with a question or observation that hooks, unfold the idea
+step by step with everyday examples, look at it from a few angles (what thinkers have said, what science says, the
+best objection), and end on a thought that stays with the viewer.
+Every fact, name, date, figure and quotation must come from the notes below; never invent who said what. Reflections
+and everyday examples need no source.
+Write {n} paragraphs of 30 to 45 words each, in spoken English ("you" is welcome): no headings, lists, brackets or symbols.
+For each paragraph describe ONE picture to show while it is read: a single concrete scene (subject, setting, action,
+mood) in 12 to 25 words, no words or letters in it; keep recurring people looking the same. Also give "search": 2 to 4
+words to find a photograph of that scene.
+Also give a YouTube title of at most 70 characters that makes people curious without promising what the video doesn't say.
+Notes:
+{text}
+Reply as JSON: {{"title": "...", "paragraphs": [{{"text": "...", "picture": "...", "search": "..."}}]}}"""
+ESSAY_STYLE = "painterly digital art, cinematic soft light, muted colours, wide shot, no text"
+ESSAY_WPS = 2.4  # words a second the voice reads, pauses included
+
+
+def make_essay(con, text="", count=None):
+    """A long-form 16:9 essay on an idea or a shower thought: research it, let the writer's model write it as short
+    paragraphs from the notes, each with a picture (drawn on this Mac if the picture model is installed, else a free
+    photograph), then voice it with the words shown as they are said."""
+    before, topic = dict(ai_used), text.strip() or random_topic()
+    seconds = min(BRAND["max_seconds"], 600) * 0.9
+    n = count or round(seconds * ESSAY_WPS / 38)
+    print(f"essay on: {topic} ({n} paragraphs, about {seconds / 60:.0f} minutes)\n  researching…")
+    a = research(topic)
+    for q in (f"{topic} philosophy", f"{topic} explained"):  # a long video needs more than one round of notes
+        try:
+            more = research_web(q, pages=4)
+            a["text"] += "\n\n" + more["text"]
+            a["credit"] += " " + more["credit"].removeprefix("Researched from: ")
+        except Exception as e:
+            print(f"  more research on '{q}' failed ({e})")
+    best = {}
+    for _ in range(2):  # small models stop early; keep the longer of two tries
+        r = llm(ESSAY_PROMPT.format(minutes=round(seconds / 60), topic=topic, n=n, text=a["text"][:24000]), 0.7)
+        paras = [p for p in r.get("paragraphs") or [] if isinstance(p, dict) and len(str(p.get("text") or "").split()) >= 8]
+        if len(paras) > len(best.get("paragraphs", [])):
+            best = r | {"paragraphs": paras}
+        if len(paras) >= n * 0.8:
+            break
+    paras = best.get("paragraphs") or []
+    if len(paras) < 8:
+        raise RuntimeError(f"the writer gave {len(paras)} paragraphs on \"{topic}\"; try again or another topic")
+    words = sum(len(str(p["text"]).split()) for p in paras)
+    print(f"  {len(paras)} paragraphs, {words} words (about {words / ESSAY_WPS / 60:.1f} minutes)")
+    pid, ep, work = new_video(con, f"essay:{topic}")
+    style, items, drawn = BRAND.get("picture_style") or ESSAY_STYLE, [], IMAGE_READY.exists()
+    import hashlib, shutil
+    shutil.rmtree(DRAWING, ignore_errors=True)
+    for k, p in enumerate(paras):
+        scene, img = str(p.get("picture") or p["text"]).strip(), None
+        print(f"  picture {k + 1} of {len(paras)}: {scene[:90]!r}", flush=True)
+        try:
+            if drawn:
+                path = work / f"img_{hashlib.sha1(f'{scene}{style}'.encode()).hexdigest()[:10]}.png"
+                generate_image(f"{scene}. {style}", path, 1280, height=720, preview=path.stem if os.environ.get("RW_STUDIO") else None)
+                img = dict(source="ai", url="ai:" + path.stem, name=scene[:150], page="", artist="FLUX.1 schnell",
+                           license="AI-generated", path=str(path), query=scene)
+            else:
+                q = str(p.get("search") or scene)
+                img = next((d for c in src_openverse(q, 6) + src_commons(q, 6) if (d := download_image(c, work))), None)
+        except Exception as e:
+            print(f"  no picture ({e}); keeping the last one")
+        if not img and items:
+            img = items[-1]["image"]
+        if img:
+            items.append(dict(name=f"Part {k + 1}", text=re.sub(r"\s+", " ", str(p["text"])).strip(), image=img, picture=scene))
+    if len(items) < 8:
+        raise RuntimeError("couldn't find or draw pictures for the essay")
+    title = str(best.get("title") or topic).strip()[:90]
+    m = dict(ep=ep, pageid=pid, origin="essay", article_title=topic, description="", title=title, items=items, script="",
+             images=[], tags=[w for w in re.findall(r"[a-z0-9]+", topic.lower()) if len(w) > 3][:5],
+             url=a["url"], credit=a["credit"], source_label=a["source_label"])
+    return make_format(con, m, topic, before)
+
+
+def essay_steps(m):
+    return ([("intro", None, m["title"].rstrip(".?!") + "?" if m["title"].lower().startswith(("why", "what", "how", "is ", "are ", "do ", "does ", "can "))
+              else m["title"].rstrip(".") + ".", 0.6, None)]
+            + [("part", k, i["text"], 0.35, None) for k, i in enumerate(m["items"])]
+            + [("outro", None, BRAND["outro_line"], 1.0, None)])
+
+
+def render_essay(m, scenes, audio_path, duration, out_path, frame_at=None):
+    """Full-frame pictures that drift slowly (in, then out, the next one) and cross-fade, with the words being said
+    shown along the bottom a phrase at a time, the spoken word lit. The title over the first picture; the closing line
+    over the last."""
+    from PIL import Image, ImageDraw
+    ensure_fonts()
+    items, pics, overlays = m["items"], {}, {}
+    shade = Image.new("L", (1, H))
+    shade.putdata([int(200 * max(0, (y / H - 0.55) / 0.45) ** 1.4) for y in range(H)])  # dark at the bottom, for the words
+    shade = shade.resize((W, H))
+
+    def chunks(words):  # phrases of a few words, broken after punctuation where possible
+        out, cur = [], []
+        for w in words:
+            cur.append(w)
+            if len(cur) >= 12 or (len(cur) >= 5 and re.search(r"[.!?;:,]$", w[0])) or re.search(r"[.!?]$", w[0]):
+                out.append(cur)
+                cur = []
+        return out + [cur] if cur else out
+
+    phrases = {id(s): chunks(s.get("words") or []) for s in scenes}
+
+    def pic(k, t0, t1, t):
+        if k not in pics:
+            if len(pics) > 3:
+                pics.clear()
+            pics[k] = cover(items[k]["image"]["path"], W, H, 1.12)
+        p, f = pics[k], min(1, max(0, (t - t0) / max(0.1, t1 - t0)))
+        z = 1.0 + 0.1 * (f if k % 2 == 0 else 1 - f)  # zoom in on even pictures, out on odd ones
+        w, h = p.width / z, p.height / z
+        dx = (p.width - w) * (0.5 + (0.3 if k % 3 == 0 else -0.3) * (f - 0.5))  # and a gentle sideways drift
+        return p.resize((W, H), Image.BILINEAR, box=(dx, (p.height - h) / 2, dx + w, (p.height + h) / 2))
+
+    def overlay(key, draw_text):
+        if key not in overlays:
+            if len(overlays) > 200:
+                overlays.clear()
+            im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            im.putalpha(shade)
+            draw_text(ImageDraw.Draw(im))
+            overlays[key] = im
+        return overlays[key]
+
+    def words_at(d, ph, lit):
+        f, ls = fit_lines(" ".join(w for w, _, _ in ph), "body", 60, W - 400, 2, "SemiBold")
+        y, n = H - 110 - len(ls) * f.size * 1.3, 0
+        for l in ls:
+            x = (W - f.getlength(l)) / 2
+            for w in l.split():
+                ink = C["accent"] if n == lit else "#FFFFFF"
+                d.text((x + 3, y + 3), w, font=f, fill=(0, 0, 0, 160))
+                d.text((x, y), w, font=f, fill=ink)
+                x += f.getlength(w + " ")
+                n += 1
+            y += f.size * 1.3
+
+    def frame(t):
+        k = next((j for j, s in enumerate(scenes) if s["start"] <= t < s["end"]), len(scenes) - 1)
+        s = scenes[k]
+        q = 0 if s["kind"] == "intro" else len(items) - 1 if s["kind"] == "outro" else s["q"]
+        im = pic(q, s["start"], s["end"], t)
+        if k > 0 and t - s["start"] < 0.8 and s["kind"] != "outro":  # cross-fade from the last picture
+            p = scenes[k - 1]
+            prev = 0 if p["kind"] == "intro" else p["q"]
+            im = Image.blend(pic(prev, p["start"], p["end"], t), im, (t - s["start"]) / 0.8)
+        if s["kind"] in ("intro", "outro"):
+            def card(d):
+                d.rectangle((0, 0, W, H), fill=(0, 0, 0, 90))
+                if s["kind"] == "intro":
+                    f, ls = fit_lines(m["title"], "display", 110, W - 300, 3)
+                    y = H / 2 - len(ls) * f.size * 0.6
+                    for l in ls:
+                        d.text((W / 2, y), l, font=f, fill="#FFFFFF", anchor="mt")
+                        y += f.size * 1.2
+                    d.text((W / 2, y + 40), BRAND["channel"].upper(), font=font("display", 44), fill=C["accent"], anchor="mt")
+                else:
+                    f, ls = fit_lines(BRAND["outro_line"], "display", 80, W - 300, 3)
+                    for j, l in enumerate(ls):
+                        d.text((W / 2, H / 2 + (j - len(ls) / 2) * f.size * 1.2), l, font=f, fill="#FFFFFF", anchor="mt")
+            ov = overlay((s["kind"],), card)
+        else:
+            ph = phrases[id(s)]
+            j = max([n for n, c in enumerate(ph) if c[0][1] <= t] or [0])
+            lit = max([n for n, w in enumerate(ph[j]) if w[1] <= t] or [-1]) if ph else -1
+            ov = overlay((k, j, lit), lambda d: words_at(d, ph[j], lit) if ph else None)
+        im.paste(ov, (0, 0), ov)
+        return im
+
+    if frame_at is not None:
+        return frame(frame_at).save(out_path)
+    music = WS / BRAND["music"]
+    encode(frame, duration, audio_path, audio_mix(music if music.exists() else None, BRAND["music_volume"], []), out_path)
+
+
 # video_type / origin -> (make it from the Make box's text, where its parts are in meta, its scenes, its renderer, fewest parts)
 FORMATS = {"quiz": (make_quiz, "quiz", quiz_steps, render_quiz, 3),
            "guess": (make_guess, "items", guess_steps, render_guess, 3),
            "onthisday": (make_onthisday, "items", onthisday_steps, render_onthisday, 2),
            "top": (make_top, "items", top_steps, render_top, 3),
-           "word": (make_word, "items", word_steps, render_word, 2)}
+           "word": (make_word, "items", word_steps, render_word, 2),
+           "essay": (make_essay, "items", essay_steps, render_essay, 8)}
 
 
 def copy_to(con, ep, to):
@@ -4611,7 +4793,7 @@ def upload_youtube(row, m, publish_at):
     resp = None
     while resp is None:
         _, resp = req.next_chunk()
-    return resp["id"], f"https://youtube.com/shorts/{resp['id']} ({status['privacyStatus']})"
+    return resp["id"], f"https://youtube.com/{'watch?v=' if W > H else 'shorts/'}{resp['id']} ({status['privacyStatus']})"
 
 
 def upload(con, pageid, publish_at=None):
