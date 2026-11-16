@@ -4392,9 +4392,14 @@ def sources_id(key):
 # ---------- automation (macOS launchd) ----------
 SCHEDULE_DEFAULTS = {"enabled": False, "times": ["09:00"], "days": [0, 1, 2, 3, 4, 5, 6], "upload": True,
                      "publish": "private", "publish_time": "15:00", "fallback": "wikipedia", "fallback_arg": "",
-                     "pick": "order"}  # pick: "order" = top of the Queue (ready videos), "newest" = the video this run made
+                     "pick": "order",  # pick: "order" = top of the Queue (ready videos), "newest" = the video this run made
+                     # publish_mode: "after" = each make run uploads (upload, publish, publish_time, pick above);
+                     # "times" = publishing has its own times and days: each takes the top of the Queue and makes it public
+                     "publish_mode": "after", "publish_times": ["15:00"], "publish_days": [0, 1, 2, 3, 4, 5, 6]}
 LAUNCH_LABEL = "com.shortsmachine.auto" + (f".{WS_NAME}" if WS_NAME else "")  # one job per channel
 LAUNCH_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_LABEL}.plist"
+PUBLISH_LABEL = "com.shortsmachine.publish" + (f".{WS_NAME}" if WS_NAME else "")  # its publishing times, when separate
+PUBLISH_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{PUBLISH_LABEL}.plist"
 AUTO_LOG = DB.parent / "auto.log"
 
 
@@ -4417,35 +4422,77 @@ def notify(msg):
     subprocess.run(["osascript", "-e", f'display notification "{safe}" with title "{BRAND["channel"].replace(chr(34), "")[:40]}"'], capture_output=True)
 
 
+def separate_publishing(sch=None):
+    sch = sch or schedule_settings()
+    return sch["upload"] and sch["publish_mode"] == "times" and bool(sch["publish_times"] and sch["publish_days"])
+
+
+def launch_jobs():
+    """This channel's launchd jobs as {label: (plist path, its contents or None to remove it)}: one that makes videos
+    (`rw auto`) at its times, and, when publishing has its own times, one that publishes (`rw publishnext`)."""
+    sch = schedule_settings()
+
+    def job(label, cmd, times, days):
+        days = sorted(set(days))
+        slots = [dict(Hour=int(t[:2]), Minute=int(t[3:])) for t in sorted(set(times))]
+        # launchd: Weekday 0 = Sunday; leave it out when every day is selected
+        return {"Label": label, "ProgramArguments": ["/bin/bash", str(ROOT / "rw"), cmd], "WorkingDirectory": str(ROOT),
+                "StartCalendarInterval": slots if len(days) == 7 else [s | {"Weekday": d} for s in slots for d in days],
+                "StandardOutPath": str(AUTO_LOG), "StandardErrorPath": str(AUTO_LOG),
+                "EnvironmentVariables": {"RW_WORKSPACE": WS_NAME, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}}
+    return {LAUNCH_LABEL: (LAUNCH_PLIST, job(LAUNCH_LABEL, "auto", sch["times"], sch["days"]) if sch["enabled"] else None),
+            PUBLISH_LABEL: (PUBLISH_PLIST, job(PUBLISH_LABEL, "publishnext", sch["publish_times"], sch["publish_days"])
+                            if separate_publishing(sch) else None)}
+
+
 def schedule_apply():
-    """Install (or remove) the launchd job that runs `rw auto` at the scheduled times."""
+    """Install (or remove) this channel's launchd jobs: making at its times, and publishing at its own times."""
     import os, plistlib, subprocess
     sch, domain = schedule_settings(), f"gui/{os.getuid()}"
-    subprocess.run(["launchctl", "bootout", domain, str(LAUNCH_PLIST)], capture_output=True)  # drop any old job
-    if not sch["enabled"]:
-        LAUNCH_PLIST.unlink(missing_ok=True)
-        print("automation is off (launchd job removed)")
-        return
-    days = sorted(set(sch["days"]))
-    slots = [dict(Hour=int(t[:2]), Minute=int(t[3:])) for t in sch["times"]]
-    # launchd: Weekday 0 = Sunday; leave it out when every day is selected
-    intervals = slots if len(days) == 7 else [s | {"Weekday": d} for s in slots for d in days]
-    LAUNCH_PLIST.parent.mkdir(parents=True, exist_ok=True)
-    with open(LAUNCH_PLIST, "wb") as f:
-        plistlib.dump({"Label": LAUNCH_LABEL, "ProgramArguments": ["/bin/bash", str(ROOT / "rw"), "auto"],
-                       "WorkingDirectory": str(ROOT), "StartCalendarInterval": intervals,
-                       "StandardOutPath": str(AUTO_LOG), "StandardErrorPath": str(AUTO_LOG),
-                       "EnvironmentVariables": {"RW_WORKSPACE": WS_NAME, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}}, f)
-    r = subprocess.run(["launchctl", "bootstrap", domain, str(LAUNCH_PLIST)], capture_output=True, text=True)
-    if r.returncode:
-        raise SystemExit(f"launchctl refused the job: {r.stderr.strip()}")
-    print(f"automation on: {', '.join(sch['times'])} on {'every day' if len(days) == 7 else ', '.join('Sun Mon Tue Wed Thu Fri Sat'.split()[d] for d in days)}"
-          f"; job {LAUNCH_LABEL}, log data/auto.log")
+    when = lambda times, days: f"{', '.join(sorted(times))} on " + ("every day" if len(set(days)) == 7 else
+                                                                    ', '.join('Sun Mon Tue Wed Thu Fri Sat'.split()[d] for d in sorted(set(days))))
+    for label, (path, plist) in launch_jobs().items():
+        subprocess.run(["launchctl", "bootout", domain, str(path)], capture_output=True)  # drop any old job
+        if not plist:
+            path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            plistlib.dump(plist, f)
+        r = subprocess.run(["launchctl", "bootstrap", domain, str(path)], capture_output=True, text=True)
+        if r.returncode:
+            raise SystemExit(f"launchctl refused the job {label}: {r.stderr.strip()}")
+    print(f"making videos: {when(sch['times'], sch['days']) if sch['enabled'] else 'off'}")
+    print(f"publishing: {when(sch['publish_times'], sch['publish_days']) if separate_publishing(sch) else 'right after each is made' if sch['enabled'] and sch['upload'] else 'off'}"
+          "; log data/auto.log")
 
 
 def schedule_loaded():
+    """Are all the jobs this channel's schedule needs installed and loaded?"""
     import os, subprocess
-    return subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LAUNCH_LABEL}"], capture_output=True).returncode == 0
+    need = [label for label, (_, plist) in launch_jobs().items() if plist]
+    return bool(need) and all(subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True).returncode == 0
+                              for label in need)
+
+
+def publish_next(con, dry_run=False):
+    """A scheduled publish: the video at the top of the Queue goes public now on YouTube and is posted to every other
+    platform ticked in Connectors. Nothing ready = nothing published, and a notification says so."""
+    sys.stdout.reconfigure(line_buffering=True)
+    print(f"=== scheduled publish {time.strftime('%Y-%m-%d %H:%M')}" + (" (dry run)" if dry_run else ""))
+    row = con.execute(f"select ep, title from pages where status='rendered' {UPLOAD_ORDER} limit 1").fetchone()
+    if not row:
+        print("nothing in the Queue to publish")
+        if not dry_run:
+            notify("Scheduled publish: nothing in the Queue")
+        return
+    print(f"publish EP {row['ep']:03d} {row['title']} (top of the Queue), public, to {', '.join(PLATFORMS[p] for p in BRAND.get('publish_to') or ['youtube'] if p in PLATFORMS)}")
+    if dry_run:
+        return
+    upload_pending(con, None, row["ep"], public=True)
+    if con.execute("select status from pages where ep=?", (row["ep"],)).fetchone()["status"] != "uploaded":
+        notify(f"Scheduled publish of EP {row['ep']:03d} didn't finish; see the log")
+    print("=== done")
 
 
 def publish_time_utc(hhmm, min_gap_hours=2):
@@ -4479,7 +4526,8 @@ def auto(con, dry_run=False):
         ready = con.execute(f"select ep, title from pages where status='rendered' {UPLOAD_ORDER} limit 1").fetchone()
         which = ("the video it makes" if sch["pick"] == "newest" or not ready
                  else f"EP {ready['ep']:03d} {ready['title']} (top of the Queue)")
-        plan += f"; then {'upload ' + which + (', public at ' + when + ' UTC' if when else ', private') if sch['upload'] else 'no upload'}"
+        plan += ("; it waits in the Queue for a publishing time (" + ", ".join(sch["publish_times"]) + ")" if separate_publishing(sch) else
+                 f"; then {'upload ' + which + (', public at ' + when + ' UTC' if when else ', private') if sch['upload'] else 'no upload'}")
         print(plan)
         if dry_run:
             return
@@ -4497,7 +4545,7 @@ def auto(con, dry_run=False):
             pid = discover_source(con, sch["fallback"], 1, sch["fallback_arg"] or None)[0]
         if not clips_channel() and BRAND.get("video_type") not in FORMATS:
             make(con, pid)
-        if sch["upload"]:
+        if sch["upload"] and not separate_publishing(sch):
             pick = (f"select ep from pages where status='rendered' {UPLOAD_ORDER} limit 1" if sch["pick"] == "order"
                     else f"select ep from pages where pageid={int(pid)}")
             upload_pending(con, when, con.execute(pick).fetchone()["ep"])
@@ -4879,9 +4927,9 @@ def video_seconds(path):
     return int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) if m else 0.0
 
 
-def upload_youtube(row, m, publish_at):
+def upload_youtube(row, m, publish_at, public=False):
     from googleapiclient.http import MediaFileUpload
-    status = {"privacyStatus": "private", "selfDeclaredMadeForKids": False}
+    status = {"privacyStatus": "public" if public and not publish_at else "private", "selfDeclaredMadeForKids": False}
     if publish_at:
         status["publishAt"] = publish_at
     body = {"snippet": {"title": m["title"], "description": m["yt_description"],
@@ -4894,7 +4942,7 @@ def upload_youtube(row, m, publish_at):
     return resp["id"], f"https://youtube.com/{'watch?v=' if m.get("shape") == "long" else 'shorts/'}{resp['id']} ({status['privacyStatus']})"
 
 
-def upload(con, pageid, publish_at=None):
+def upload(con, pageid, publish_at=None, public=False):
     """Publish to every platform ticked in Connectors. Each that succeeds is remembered, so a retry only redoes the
     ones that failed; the video counts as uploaded when all are done. publish_at schedules YouTube only."""
     row = con.execute("select * from pages where pageid=?", (pageid,)).fetchone()
@@ -4910,7 +4958,7 @@ def upload(con, pageid, publish_at=None):
     for p in targets:
         try:
             if p == "youtube":
-                vid, where = upload_youtube(row, m, publish_at)
+                vid, where = upload_youtube(row, m, publish_at, public)
                 upsert(con, pageid, video_id=vid)
             else:
                 posts[p] = {"id": "", "url": "", **{"youtube": None, "facebook": post_facebook, "instagram": post_instagram,
@@ -4927,7 +4975,7 @@ def upload(con, pageid, publish_at=None):
         upsert(con, pageid, status="uploaded")
 
 
-def upload_pending(con, publish_at=None, ep=None):
+def upload_pending(con, publish_at=None, ep=None, public=False):
     """Upload every rendered-but-not-uploaded video (or just episode `ep`) in the Publish order."""
     rows = con.execute("select pageid, ep, title from pages where status='rendered' and (? is null or ep=?) "
                        + UPLOAD_ORDER,
@@ -4937,7 +4985,7 @@ def upload_pending(con, publish_at=None, ep=None):
     for r in rows:
         print(f"[{r['ep']:03d}] uploading {r['title']}")
         try:
-            upload(con, r["pageid"], publish_at)
+            upload(con, r["pageid"], publish_at, public)
         except Exception as e:  # keep going; it stays 'rendered' and is retried next time
             print(f"  publishing failed: {e}")
 
@@ -5070,6 +5118,8 @@ def main():
     cl = sub.add_parser("clips", help="a countdown of clips: words to search YouTube for, and/or links from any site")
     cl.add_argument("items", nargs="+"); cl.add_argument("--count", type=int, default=5, choices=range(2, 11))
     au = sub.add_parser("auto"); au.add_argument("--dry-run", action="store_true")
+    pn = sub.add_parser("publishnext", help="publish the top of the Queue now, public (what the publishing schedule runs)")
+    pn.add_argument("--dry-run", action="store_true")
     sub.add_parser("schedule")
     vt = sub.add_parser("voicetest"); vt.add_argument("--text")
     up = sub.add_parser("unpublish"); up.add_argument("--ep", type=int, required=True)
@@ -5128,6 +5178,8 @@ def main():
         print(dict(con.execute("select status, count(*) from pages group by status").fetchall()))
     elif args.cmd == "auto":
         auto(con, args.dry_run)
+    elif args.cmd == "publishnext":
+        publish_next(con, args.dry_run)
     elif args.cmd == "schedule":
         schedule_apply()
     elif args.cmd == "preview":

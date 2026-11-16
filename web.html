@@ -613,23 +613,40 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
                 <label style="flex:1;min-width:min(220px,100%)"><span data-for="explainer">If the ideabank is empty, find an idea from</span><span data-for="clips">Search words or links for every run</span>
                   <input id="schArg" placeholder="Empty = your channel's topics"></label>
               </div>
-              <label class="check"><input type="checkbox" id="schUp"> Publish after making <span class="hint" style="margin:0">to the platforms ticked in <a href="/connectors/publishing">Connectors</a></span></label>
-              <div id="schPick" style="display:grid;gap:6px;padding-left:24px">
+            </div>
+            <div class="hint" id="schStatus"></div>
+            <div class="inline"><button class="btn sm" type="button" id="schDry">Dry run: what would a making run do now?</button></div>
+            <pre class="schlog" id="schLog" hidden></pre>
+            <div class="hint">Making and publishing each run as a macOS launchd job, even when the studio is closed. If the Mac is asleep at that time, it runs when it wakes. Keep Ollama running. You get a notification if a run fails. Saving installs or removes this channel's jobs in <code>~/Library/LaunchAgents/</code>.</div>
+          </fieldset>
+          <fieldset class="scard" data-group="automation"><legend>When to publish</legend>
+            <div style="display:grid;gap:8px">
+              <span class="hint">To YouTube and every other platform ticked in <a href="/connectors/publishing">Connectors</a></span>
+              <label class="radio"><input type="radio" name="schMode" value="off"> Don't publish automatically <span class="hint">publish from the Queue yourself</span></label>
+              <label class="radio"><input type="radio" name="schMode" value="times"> At its own times <span class="hint">each time, the video at the top of your Queue goes public</span></label>
+              <div id="schPubBody" style="display:grid;gap:12px;padding-left:24px">
+                <div><div class="hint" style="margin-bottom:6px">Publishing times · up to 6 a day</div>
+                  <div class="inline" id="pubTimes"></div></div>
+                <div><div class="hint" style="margin-bottom:6px">Publishing days</div>
+                  <div class="seg" id="pubDays" role="group" aria-label="Publishing days"></div></div>
+              </div>
+              <label class="radio"><input type="radio" name="schMode" value="after"> Right after each video is made <span class="hint">by the making schedule</span></label>
+              <div id="schAfter" style="display:grid;gap:10px;padding-left:24px">
+              <div id="schPick" style="display:grid;gap:6px">
                 <span class="hint">Each run publishes</span>
                 <label class="radio"><input type="radio" name="schPick" value="order"> the next video in your <b>Queue</b> (top first)</label>
                 <label class="radio"><input type="radio" name="schPick" value="newest"> the video that run just made</label>
               </div>
-              <div id="schPub" style="display:grid;gap:6px;padding-left:24px">
+              <div id="schPub" style="display:grid;gap:6px">
                 <span class="hint">On YouTube</span>
                 <label class="radio"><input type="radio" name="schPub" value="private"> Keep private (you publish it yourself)</label>
                 <label class="radio"><input type="radio" name="schPub" value="at"> Go public at <input type="time" id="schPubTime" aria-label="Publish time">
                   <span class="hint">next time at least 2 h after it's made, so you can review it</span></label>
               </div>
+              </div>
             </div>
-            <div class="hint" id="schStatus"></div>
-            <div class="inline"><button class="btn sm" type="button" id="schDry">Dry run: what would happen now?</button></div>
-            <pre class="schlog" id="schLog" hidden></pre>
-            <div class="hint">Runs as a macOS launchd job, even when the studio is closed. If the Mac is asleep at that time, it runs when it wakes. Keep Ollama running. You get a notification if a run fails. Each channel has its own job; saving installs or removes this channel's in <code>~/Library/LaunchAgents/</code>.</div>
+            <div class="hint" id="pubStatus"></div>
+            <div class="inline"><button class="btn sm" type="button" id="pubDry">Dry run: what would a publishing run do now?</button></div>
           </fieldset>
         </form>
         <div class="spreview">
@@ -2700,55 +2717,72 @@ $("#sampleFile").onchange = e => e.target.files[0] && uploadSample(e.target.file
 // ---- automation ----
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 let schLoaded = false, savedSchedule = "";
-function nextRun(sch) {
-  if (!sch.enabled || !sch.times.length || !sch.days.length) return null;
+function nextRun(times, days) {
+  if (!times.length || !days.length) return null;
   const now = new Date();
   for (let add = 0; add < 8; add++) {
     const d = new Date(now); d.setDate(now.getDate() + add);
-    if (!sch.days.includes(d.getDay())) continue;
-    for (const t of [...sch.times].sort()) { const x = new Date(d); x.setHours(+t.slice(0, 2), +t.slice(3), 0, 0); if (x > now) return x; }
+    if (!days.includes(d.getDay())) continue;
+    for (const t of [...times].sort()) { const x = new Date(d); x.setHours(+t.slice(0, 2), +t.slice(3), 0, 0); if (x > now) return x; }
   }
   return null;
 }
+const pubMode = sch => !sch.upload ? "off" : sch.publish_mode === "times" ? "times" : "after";
+const whenText = x => x ? x.toLocaleString([], {weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "—";
+const timeChips = (list, key, max, label) => list.map((t, i) => `<span class="tchip"><input type="time" value="${t}" data-${key}i="${i}" aria-label="${label} ${i + 1}">
+      ${list.length > 1 ? `<button type="button" data-${key}rm="${i}" aria-label="Remove ${label.toLowerCase()} ${i + 1}">✕</button>` : ""}</span>`).join("")
+    + (list.length < max ? `<button class="btn sm" type="button" data-${key}add="1">+ Add time</button>` : "");
 function renderSchedule() {
   const sch = S.schedule;
   $("#schOn").checked = sch.enabled; $("#schBody").hidden = !sch.enabled;
-  $("#schTimes").innerHTML = sch.times.map((t, i) => `<span class="tchip"><input type="time" value="${t}" data-ti="${i}" aria-label="Run time ${i + 1}">
-      ${sch.times.length > 1 ? `<button type="button" data-trm="${i}" aria-label="Remove time ${i + 1}">✕</button>` : ""}</span>`).join("")
-    + (sch.times.length < 4 ? `<button class="btn sm" type="button" id="tAdd">+ Add time</button>` : "");
-  $("#schDays").innerHTML = DAY_NAMES.map((n, d) => `<button type="button" data-day="${d}" class="${sch.days.includes(d) ? "on" : ""}" aria-pressed="${sch.days.includes(d)}">${n}</button>`).join("");
+  $("#schTimes").innerHTML = timeChips(sch.times, "t", 4, "Making time");
+  $("#pubTimes").innerHTML = timeChips(sch.publish_times || ["15:00"], "p", 6, "Publishing time");
+  const dayBtns = (days, key) => DAY_NAMES.map((n, d) => `<button type="button" data-${key}="${d}" class="${days.includes(d) ? "on" : ""}" aria-pressed="${days.includes(d)}">${n}</button>`).join("");
+  $("#schDays").innerHTML = dayBtns(sch.days, "day");
+  $("#pubDays").innerHTML = dayBtns(sch.publish_days || [0, 1, 2, 3, 4, 5, 6], "pday");
   $("#schArg").value = sch.fallback_arg;
-  $("#schUp").checked = sch.upload; $("#schPub").hidden = $("#schPick").hidden = !sch.upload;
+  const mode = pubMode(sch);
+  document.querySelectorAll("[name=schMode]").forEach(r => r.checked = r.value === mode);
+  $("#schAfter").hidden = mode !== "after"; $("#schPubBody").hidden = mode !== "times";
   document.querySelectorAll("[name=schPick]").forEach(r => r.checked = r.value === (sch.pick || "order"));
   document.querySelectorAll("[name=schPub]").forEach(r => r.checked = r.value === sch.publish);
   $("#schPubTime").value = sch.publish_time;
-  const nr = nextRun(sch), changed = JSON.stringify(sch) !== savedSchedule;
-  $("#schStatus").innerHTML = !sch.enabled ? (schLoaded && !changed ? "Off" : "Off") :
-    changed ? `<span class="dirty">Not active yet: click Save to install the schedule</span>` :
-    schLoaded ? `<b style="color:var(--ok)">Active</b> · next run ${nr ? nr.toLocaleString([], {weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"}) : "—"}`
-    : `<span style="color:var(--bad)">Saved but the launchd job isn't loaded: click Save again</span>`;
+  const changed = JSON.stringify(sch) !== savedSchedule;
+  const status = (on, next, what) => !on ? "Off" : changed ? `<span class="dirty">Not active yet: click Save to install the schedule</span>` :
+    schLoaded ? `<b style="color:var(--ok)">Active</b> · next ${what} ${whenText(next)}` : `<span style="color:var(--bad)">Saved but the launchd job isn't loaded: click Save again</span>`;
+  $("#schStatus").innerHTML = status(sch.enabled, sch.enabled && nextRun(sch.times, sch.days), "video made");
+  $("#pubStatus").innerHTML = mode === "after" ? (sch.enabled ? "Each video is published by the run that makes it" : "Off: turn on the making schedule above, or choose its own times")
+    : status(mode === "times", nextRun(sch.publish_times || [], sch.publish_days || []), "publish");
 }
 function readSchedule() {
   const sch = S.schedule;
   sch.enabled = $("#schOn").checked;
   sch.times = [...document.querySelectorAll("[data-ti]")].map(i => i.value).filter(Boolean);
+  sch.publish_times = [...document.querySelectorAll("[data-pi]")].map(i => i.value).filter(Boolean);
+  const mode = document.querySelector("[name=schMode]:checked")?.value || "off";
+  sch.upload = mode !== "off";
+  if (mode !== "off") sch.publish_mode = mode;
   sch.fallback_arg = $("#schArg").value.trim();  // a link finds ideas in it; anything else is a Wikipedia topic
   sch.fallback = LINK.test(sch.fallback_arg) ? "link" : "wikipedia";
-  sch.upload = $("#schUp").checked;
   sch.publish = document.querySelector("[name=schPub]:checked")?.value || "private";
   sch.pick = document.querySelector("[name=schPick]:checked")?.value || "order";
   sch.publish_time = $("#schPubTime").value || "15:00";
 }
-$("#sform").addEventListener("change", e => { if (e.target.closest(".scard")?.querySelector("#schOn")) { readSchedule(); renderSchedule(); setDirty(true); } });
+$("#sform").addEventListener("change", e => { if (e.target.closest("[data-group=automation]")) { readSchedule(); renderSchedule(); setDirty(true); } });
 $("#sform").addEventListener("click", e => {
   const t = e.target.closest("button"); if (!t) return;
-  if (t.dataset.day) { const d = +t.dataset.day, ds = S.schedule.days; S.schedule.days = ds.includes(d) ? ds.filter(x => x !== d) : [...ds, d].sort(); }
-  else if (t.dataset.trm) { readSchedule(); S.schedule.times.splice(+t.dataset.trm, 1); }
-  else if (t.id === "tAdd") { readSchedule(); S.schedule.times.push("18:00"); }
+  const sch = S.schedule, flip = (days, d) => days.includes(d) ? days.filter(x => x !== d) : [...days, d].sort();
+  if (t.dataset.day) sch.days = flip(sch.days, +t.dataset.day);
+  else if (t.dataset.pday) sch.publish_days = flip(sch.publish_days || [0, 1, 2, 3, 4, 5, 6], +t.dataset.pday);
+  else if (t.dataset.trm) { readSchedule(); sch.times.splice(+t.dataset.trm, 1); }
+  else if (t.dataset.prm) { readSchedule(); sch.publish_times.splice(+t.dataset.prm, 1); }
+  else if (t.dataset.tadd) { readSchedule(); sch.times.push("18:00"); }
+  else if (t.dataset.padd) { readSchedule(); sch.publish_times.push("18:00"); }
   else return;
   renderSchedule(); setDirty(true);
 });
 $("#schDry").onclick = async () => { if (await saveSettings() && await exec("auto --dry-run")) { await waitJob(); } };
+$("#pubDry").onclick = async () => { if (await saveSettings() && await exec("publishnext --dry-run")) { await waitJob(); } };
 async function refreshScheduleStatus() {
   const j = await (await fetch("/api/settings")).json();
   schLoaded = j.schedule_loaded; savedSchedule = JSON.stringify(j.schedule);

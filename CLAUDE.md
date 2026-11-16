@@ -48,7 +48,10 @@ The first channel lives in the project root (`WS == ROOT`; its DB and `meta.json
 never moved); others live in `workspaces/<slug>/`. `RW_WORKSPACE` picks one ("" = the first); rw.py resolves it once at
 import into `WS_NAME` / `WS`. Per channel (under `WS`): `brand.json`, `data/` (DB, `auto.log`, previews), `work/`,
 `out/`, `brand/` (logo, music, voice sample), `secrets/` (`WS_SECRETS`: `token.json`, `meta.json`, `tiktok.json`), and
-its own launchd job (`com.shortsmachine.auto[.<slug>]`). Shared (under `ROOT`): toolchain, caches, `brand/fonts/`,
+its own launchd jobs (`launch_jobs()`): `com.shortsmachine.auto[.<slug>]` runs `auto` (make) at the schedule's
+`times`/`days`; when publishing has its own times (schedule `publish_mode: "times"`, `publish_times`, `publish_days`),
+`com.shortsmachine.publish[.<slug>]` runs `publishnext` (`publish_next()`: the top of the Queue, public now, to every
+platform in `publish_to`) and `auto` doesn't upload. `publish_mode: "after"` keeps the older upload-after-making. Shared (under `ROOT`): toolchain, caches, `brand/fonts/`,
 `media/`, `secrets/` (AI and stock keys, `client_secret.json`), `data/gemini_usage.json`, `data/google_fonts.json`.
 The studio shows one channel: `POST /api/workspace` (`switch_workspace()` in web.py) writes `data/active_workspace`
 and re-execs the server, refusing while a job runs; `rw web` starts on the remembered channel. Scheduled runs of
