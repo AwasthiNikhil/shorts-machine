@@ -349,7 +349,7 @@ def placed(t):
 
 
 def meta_summary(pid, m):
-    return dict(yt_title=m["title"], script=m["script"], shape=m.get("shape") or ("long" if m.get("origin") == "essay" else "short"), yt_description=m["yt_description"], potential_info=m.get("potential"),
+    return dict(yt_title=m["title"], script=m["script"], shape=m.get("shape") or ("long" if m.get("origin") == "essay" else "short"), brief=m.get("brief", ""), fixed_title=m.get("fixed_title", ""), yt_description=m["yt_description"], potential_info=m.get("potential"),
                      narration=m.get("narration", "kokoro"), music=m.get("music", "brand"), music_volume=m.get("music_volume"),
                      ai=m.get("ai") or m.get("gemini"),
                      audio_credits=m.get("audio_credits") or {}, quiz=m.get("quiz") or [], badges=m.get("badges", True), stale=bool(m.get("stale")),

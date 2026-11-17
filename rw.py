@@ -128,7 +128,7 @@ def db():
         pageid integer primary key, title text, url text, source text, status text,
         score integer, reason text, ep integer, video_path text, video_id text,
         created text default current_timestamp, updated text default current_timestamp)""")
-    for col in ("potential integer", "rank integer", "via text", "origin text", "ref text", "upload_rank integer", "posts text"):  # added after v1; ignore if present
+    for col in ("potential integer", "rank integer", "via text", "origin text", "ref text", "upload_rank integer", "posts text", "brief text"):  # added after v1; ignore if present
         try:
             con.execute(f"alter table pages add column {col}")
         except sqlite3.OperationalError:
@@ -156,6 +156,32 @@ CLAUDE_KEY_FILE = SECRETS / "anthropic_api_key"
 CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
 ai_down = None  # why the cloud model failed this run; the rest of the run then uses the local model
 ai_used = {"requests": 0, "tokens": 0}  # this run, for the per-video count
+BRIEF, FIXED_TITLE = "", ""  # run --brief / --title: the creator's direction for this one video
+
+
+BRIEF_KEY = re.compile(r"^\s*(title|context|brief|prompt|description|idea|topic)\s*:\s*(.*)$", re.I)
+
+
+def parse_brief(text):
+    """'Title: …' / 'Context: …' lines (also Brief, Prompt, Description; Idea or Topic for the subject), in any order,
+    each running on until the next -> (idea, title, brief). Text without them is all idea."""
+    parts, key = {"idea": [], "title": [], "brief": []}, "idea"
+    for line in (text or "").splitlines():
+        if m := BRIEF_KEY.match(line):
+            key, line = {"title": "title", "idea": "idea", "topic": "idea"}.get(m[1].lower(), "brief"), m[2]
+        parts[key].append(line)
+    j = lambda k: "\n".join(parts[k]).strip()
+    return j("idea"), re.sub(r"\s+", " ", j("title"))[:100], j("brief")[:2000]
+
+
+def briefed(prompt):
+    """A writing prompt plus the creator's brief and fixed title for this video, if they gave any."""
+    if BRIEF:
+        prompt += ("\n\nTHE CREATOR'S BRIEF for this video. Follow it for angle, tone, emphasis, audience and structure; "
+                   f"facts still come only from the notes, never invent them to fit the brief:\n{BRIEF}")
+    if FIXED_TITLE:
+        prompt += f'\n\nThe video\'s title is fixed: "{FIXED_TITLE}". Write to that title.'
+    return prompt
 USAGE_FILE = ROOT / "data" / "gemini_usage.json"  # {pacific date: {model: {requests, tokens}}}, Gemini and Claude
 
 
@@ -961,6 +987,19 @@ QUESTION_WORDS = re.compile(r"^(how|why|what|when|where|who|which|is|are|can|cou
 
 
 def add_input(con, text, force=False, make_now=False):
+    """add_input_plain, after taking any 'Title:' / 'Context:' lines out (parse_brief); those are kept on the idea's
+    row and given to the writer when it is made."""
+    idea, title, brief = parse_brief(text)
+    if not (title or brief):
+        return add_input_plain(con, text, force, make_now)
+    pid = add_input_plain(con, idea or title, True, make_now)  # new direction for a topic already made: make it again
+    if pid is not None:
+        upsert(con, pid, brief=json.dumps(dict(title=title, brief=brief)), **({"title": title} if title else {}))
+        print(f"  with your {' and '.join(k for k, v in (('title', title), ('brief', brief)) if v)}")
+    return pid
+
+
+def add_input_plain(con, text, force=False, make_now=False):
     """Anything -> a queued idea. A link is made into a video (a feed, site, subreddit, category or list gets its
     best items queued instead); a paragraph is the script's source; a short query or question is researched."""
     import sources
@@ -1207,15 +1246,17 @@ def write_script(title, text, prompt="script", check=True, answer=""):
     for _ in range(6):
         n = len(str(s.get("script", "")).split())
         if n < 40:  # nothing usable yet: fresh draft
-            s = llm(prompt_for(prompt, title=title, text=notes, answer=answer) + ("\n\n" + LONG_NOTE.format(lo=lo, hi=hi) if hi > 200 else ""))
+            s = llm(briefed(prompt_for(prompt, title=title, text=notes, answer=answer) + ("\n\n" + LONG_NOTE.format(lo=lo, hi=hi) if hi > 200 else "")))
         else:  # revise the draft we have; far more reliable than redrafting blind
             action = ("Cut the least important sentences and tighten the rest." if n > hi else
                       f"Add more facts from the article, to about {(lo + hi) // 2} words." if n < lo else "Keep the length.")
-            r = llm(REVISE_PROMPT.format(n=n, action=action, text=notes, script=s["script"],
-                                         tags=json.dumps(s.get("tags", []))))
+            r = llm(briefed(REVISE_PROMPT.format(n=n, action=action, text=notes, script=s["script"],
+                                                 tags=json.dumps(s.get("tags", [])))))
             s = {**s, **{k: v for k, v in r.items() if v}}
         n = len(str(s.get("script", "")).split())
-        if lo <= n <= hi and 0 < len(str(s.get("title", ""))) <= 70:
+        if FIXED_TITLE:
+            s["title"] = FIXED_TITLE
+        if lo <= n <= hi and 0 < len(str(s.get("title", ""))) <= (100 if FIXED_TITLE else 70):
             s["tags"] = [str(t) for t in s.get("tags", [])][:8]
             c = llm(CHECK_PROMPT.format(text=notes, script=s["script"]), 0.1) if check else {}
             fixed = str(c.get("script", ""))
@@ -2546,6 +2587,10 @@ def make(con, pageid, auto=False):
     """Research, script, visuals, voice, render. In manual mode (unless auto) it stops at an editable draft."""
     before = dict(ai_used)
     row = con.execute("select * from pages where pageid=?", (pageid,)).fetchone()
+    global BRIEF, FIXED_TITLE
+    if row["brief"] and not (BRIEF or FIXED_TITLE):  # an idea saved with a title or brief
+        b = json.loads(row["brief"])
+        BRIEF, FIXED_TITLE = b.get("brief", ""), b.get("title", "")
     work = WORK / str(pageid)
     work.mkdir(parents=True, exist_ok=True)
     ep = row["ep"] or (con.execute("select coalesce(max(ep), 0) + 1 from pages").fetchone()[0])
@@ -2616,6 +2661,7 @@ def make(con, pageid, auto=False):
         print(f"  {len(images)} images")
         m = dict(ep=ep, pageid=pageid, origin=origin, shape="long" if W > H else "short", article_title=title, description=desc,
                  title=s["title"], script=s["script"], tags=s["tags"], images=images, **src)
+        m |= {k: v for k, v in (("brief", BRIEF), ("fixed_title", FIXED_TITLE)) if v}  # so Remake can give them again
         out = video_out(ep, title)
         if BRAND.get("mode") == "manual" and not auto:  # stop here: you edit script, visuals and sound, then render
             m["yt_description"] = description(m)
@@ -3472,7 +3518,7 @@ def quiz_questions(topic, text, count):
     for attempt in range((3 if count > 10 else 2) * len(chunks)):
         if count > 10:
             print(f"  writing questions: {len(good)} of {count} so far", flush=True)
-        r = llm(QUIZ_PROMPT.format(topic=topic, n=min(count - len(good), 12) + 3, text=chunks[attempt % len(chunks)]), 0.6)
+        r = llm(briefed(QUIZ_PROMPT.format(topic=topic, n=min(count - len(good), 12) + 3, text=chunks[attempt % len(chunks)])), 0.6)
         title = title or re.sub(r".*\d.*", "", str(r.get("title") or "").strip()[:70])  # a number in it may not match what's kept
         for q in r.get("questions") or []:
             if len(good) == count:
@@ -3669,6 +3715,8 @@ def produce_format(con, m):
 
 def make_format(con, m, ref, before):
     """Shared end of make_quiz / make_guess / make_onthisday: save the new video's row, voice and render it, score it."""
+    m |= {"title": FIXED_TITLE} if FIXED_TITLE else {}
+    m |= {k: v for k, v in (("brief", BRIEF), ("fixed_title", FIXED_TITLE)) if v}  # so Remake can give them again
     print(f"[{m['ep']:03d}] {m['title']}")
     m.setdefault("shape", "long" if W > H else "short")
     upsert(con, m["pageid"], title=m["title"], url=m.get("url", ""), source="curated", origin=m["origin"], ref=ref,
@@ -3776,7 +3824,7 @@ def make_guess(con, text="", count=None):
     used = json.loads(used_file.read_text()) if used_file.exists() else []
     print(f"guess the picture: {topic}")
     skip = f"Not these, already shown: {', '.join(used[-60:])}.\n" if used else ""
-    r = llm(GUESS_PROMPT.format(topic=topic, n=count + 6, skip=skip), 0.8)
+    r = llm(briefed(GUESS_PROMPT.format(topic=topic, n=count + 6, skip=skip)), 0.8)
     pid, ep, work = new_video(con, f"guess:{topic}")
     items = []
     for t in [str(t) for t in r.get("items") or []]:
@@ -3996,7 +4044,7 @@ def make_top(con, text="", count=None):
     count = count or (5 if W < H else min(25, round(max_len() * 0.85 / 14)))  # about 14 s an entry
     print(f"countdown: {topic}\n  researching…")
     a = research(f"What are the top {count + 3} {topic}, in order, with the figure for each?")
-    r = llm(TOP_PROMPT.format(n=count, more=count + 3, topic=topic, text=a["text"][:12000]), 0.5)
+    r = llm(briefed(TOP_PROMPT.format(n=count, more=count + 3, topic=topic, text=a["text"][:12000])), 0.5)
     pid, ep, work = new_video(con, f"top:{topic}")
     nums = lambda x: set(re.findall(r"\d+(?:\.\d+)?", str(x).replace(",", "")))
     items, why = [], {"proof not in the research": 0, "a number the proof doesn't have": 0, "no free picture": 0}
@@ -4076,7 +4124,7 @@ def make_word(con, text="", count=3):
         raise SystemExit(f"Wiktionary has no English entry for \"{word}\"")
     entry = re.split(r"\n=+ (Translations|Anagrams|References|Further reading|See also|Derived terms|Related terms) =+", english.group(1))[0].strip()
     pos = re.search(r"=== (Noun|Verb|Adjective|Adverb|Interjection|Proper noun|Phrase|Idiom|Proverb|Preposition|Conjunction|Pronoun) ===", english.group(1))
-    r = llm(WORD_PROMPT.format(word=word, entry=entry[:5000]), 0.4)
+    r = llm(briefed(WORD_PROMPT.format(word=word, entry=entry[:5000])), 0.4)
     meaning, origin, example = (re.sub(r"\s+", " ", str(r.get(k) or "")).strip() for k in ("meaning", "origin", "example"))
     if len(meaning.split()) < 4:
         raise RuntimeError(f"couldn't write a meaning for \"{word}\" from its entry")
@@ -4170,7 +4218,7 @@ def make_essay(con, text="", count=None):
             print(f"  more research on '{q}' failed ({e})")
     best = {}
     for _ in range(2):  # small models stop early; keep the longer of two tries
-        r = llm(ESSAY_PROMPT.format(length=length, topic=topic, n=n, text=a["text"][:24000]), 0.7)
+        r = llm(briefed(ESSAY_PROMPT.format(length=length, topic=topic, n=n, text=a["text"][:24000])), 0.7)
         paras = [p for p in r.get("paragraphs") or [] if isinstance(p, dict) and len(str(p.get("text") or "").split()) >= 8]
         if len(paras) > len(best.get("paragraphs", [])):
             best = r | {"paragraphs": paras}
@@ -5055,6 +5103,14 @@ def selftest():
         head, tail = prompt_parts(k)
         assert head and "Reply as JSON" in tail and "{" not in head.replace("{answer}", "").replace("{topics}", ""), k
     saved, BRAND["prompts"] = BRAND.get("prompts"), {"script": "Be funny about {title} }{"}
+    global BRIEF, FIXED_TITLE
+    assert briefed("P") == "P"
+    assert parse_brief("why do cats purr") == ("why do cats purr", "", "")
+    assert parse_brief("title: Purr  Power\nContext: for kids\nshort and fun\nTopic: why do cats purr") == (
+        "why do cats purr", "Purr Power", "for kids\nshort and fun")
+    BRIEF, FIXED_TITLE = "make it funny", "Cats Are Liquid"
+    assert "make it funny" in briefed("P") and '"Cats Are Liquid"' in briefed("P")
+    BRIEF = FIXED_TITLE = ""
     assert prompt_for("script", title="T", text="X", answer="").startswith("Be funny about T }{\n\nArticle title: T")
     BRAND["prompts"] = saved
     pic = dict(name="a long drawing instruction", page="", artist="FLUX.1 schnell", license="AI-generated", source="ai")
@@ -5102,6 +5158,8 @@ def main():
     r.add_argument("--upload", action="store_true"); r.add_argument("--publish-at")
     r.add_argument("--long", action="store_true", help="make it a long 16:9 video, whatever the channel's default")
     r.add_argument("--short", action="store_true", help="make it a vertical Short, whatever the channel's default")
+    r.add_argument("--title", default="", help="use this exact title (and, with no input, make the video about it)")
+    r.add_argument("--brief", default="", help="direction for the writer: angle, tone, points to cover, audience")
     a = sub.add_parser("add", help="save ideas: questions, topics, paragraphs or links")
     a.add_argument("items", nargs="+"); a.add_argument("--force", action="store_true")
     u = sub.add_parser("upload"); u.add_argument("--publish-at"); u.add_argument("--ep", type=int)
@@ -5142,6 +5200,14 @@ def main():
     sc = sub.add_parser("score"); sc.add_argument("--all", action="store_true")
     wb = sub.add_parser("web"); wb.add_argument("--port", type=int, default=8765); wb.add_argument("--no-open", action="store_true")
     args = ap.parse_args()
+    global BRIEF, FIXED_TITLE
+    BRIEF, FIXED_TITLE = (re.sub(r"\s+", " ", getattr(args, k, "") or "").strip()[:n] for k, n in (("brief", 2000), ("title", 100)))
+    if args.cmd == "run" and args.input:  # 'Title:' / 'Context:' lines in the input; flags win
+        idea, title, brief = parse_brief(args.input)
+        args.input, FIXED_TITLE, BRIEF = idea, FIXED_TITLE or title, BRIEF or brief
+    if args.cmd == "run" and (BRIEF or FIXED_TITLE):
+        args.input = args.input or FIXED_TITLE  # a title alone is the topic
+        args.force = True  # new direction for a topic already made: make it again
     if getattr(args, "long", False) or getattr(args, "short", False):  # this video's shape, over the channel's default
         set_shape(args.long)
     for d in (ROOT / "data", DB.parent, WORK, OUT, SECRETS, WS_SECRETS, WS / "brand"):

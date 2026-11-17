@@ -871,14 +871,14 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
     <div class="actions">
       <div>
         <h4>Make a video</h4>
-        <textarea id="input" class="make" rows="4" placeholder="Ask a question, name a topic, paste a paragraph or a link" aria-label="What to make a video from"></textarea>
+        <textarea id="input" class="make" rows="5" placeholder="Ask a question, name a topic, paste a paragraph or a link.&#10;&#10;Or take control:&#10;Title: Your Cat Is Secretly a Liquid&#10;Context: playful, for kids; open with a cat in a jar" aria-label="What to make a video from"></textarea>
         <div class="row" style="margin-top:8px">
           <span class="seg" id="shape" role="group" aria-label="Video shape" title="Short: vertical 9:16, a YouTube Short. Long: widescreen 16:9, several minutes (lengths in Settings → Videos)."><button type="button" data-shape="short" class="on">Short</button><button type="button" data-shape="long">Long</button></span>
           <button class="btn primary" id="makeNow" title="Make it now. Empty: the next idea in the ideabank, else a random page">Make now</button>
           <button class="btn" id="newEdit" data-for="clips" title="Start an empty video and build it yourself in the editor. Links typed above are fetched into it.">New edit</button>
           <button class="btn" id="saveIdea" data-for="explainer" title="Save it to the ideabank for later">Save idea</button>
         </div>
-        <div class="hint" data-for="explainer">Questions and topics are researched, a paragraph becomes the script, and a link is made into a video. Paste several links, one per line, to save each as an idea. A feed, site or category link fills the ideabank instead. Leave it empty to make the next idea.</div>
+        <div class="hint" data-for="explainer">Questions and topics are researched, a paragraph becomes the script, and a link is made into a video. Paste several links, one per line, to save each as an idea. A feed, site or category link fills the ideabank instead. Leave it empty to make the next idea.<br>To steer it, add lines <b>Title:</b> (used exactly) and <b>Context:</b> (angle, tone, audience, points to cover). A title alone is also the topic; put the subject on its own line or after <b>Topic:</b> if it differs. Saved ideas keep them.</div>
         <div class="hint" data-for="clips">Words are looked up as a YouTube Shorts hashtag. Links can be single videos (always used) or accounts and playlists, from TikTok, Instagram, Facebook, YouTube or Reddit. Leave it empty to use one of this channel's topics.</div>
       </div>
       <div>
@@ -1444,7 +1444,7 @@ async function openDetail(id) {
       <div class="btns">
         ${p.status === "rendered" ? `<button class="btn primary" data-upload="${p.ep}">Publish</button>` : ""}
         ${p.video && p.origin !== "clips" ? `<button class="btn" data-cutcopy="${p.pageid}" title="Opens a copy of this video on a timeline: split it, cut parts out, move them, add sound and text. This video stays as it is.">Cut in the editor</button>` : ""}
-        ${p.status !== "uploaded" ? `<button class="btn" data-remake="${esc(makeArg(p))}" data-shape-of="${p.shape || "short"}">Remake</button>` : ""}
+        ${p.status !== "uploaded" ? `<button class="btn" data-remake="${esc(makeArg(p))}" data-shape-of="${p.shape || "short"}" data-title="${esc(p.fixed_title || "")}" data-brief="${esc(p.brief || "")}">Remake</button>` : ""}
         ${["rendered", "queued", "failed"].includes(p.status) ? `<button class="btn danger" data-skip="${p.pageid}">Skip (don't upload)</button>` : ""}
         ${p.ep && p.status !== "uploaded" ? `<span id="delVidBox"><button class="btn danger" data-delvid="${p.pageid}">Delete video</button></span>` : ""}
         ${p.status === "uploaded" ? `<span id="unpubBox"><button class="btn danger" data-unpub="${p.ep}">Delete from YouTube…</button></span>` : ""}
@@ -1709,7 +1709,7 @@ document.addEventListener("click", async e => {
       && await post("/api/images", {pageid: pid, images: edImages, audio: {music: $("#sndMusic").value, music_volume: +$("#sndVol").value}});
     if (ok) { dlg.close(); exec(`rerender --ep ${+t.dataset.ep}`); } else { t.disabled = false; t.textContent = "Try again"; }
   }
-  else if (t.dataset.remake) { dlg.close(); exec(`run --force${shapeFlag(t.dataset.shapeOf)} ${quote(t.dataset.remake)}`); }
+  else if (t.dataset.remake) { dlg.close(); exec(`run --force${shapeFlag(t.dataset.shapeOf)}${briefFlags(t.dataset.title, t.dataset.brief)} ${quote(t.dataset.remake)}`); }
   else if (t.dataset.skip) { if (await post("/api/skip", {pageid: +t.dataset.skip})) { if (dlg.open) dlg.close(); termLine("removed/skipped page " + t.dataset.skip); loadPages(); } }
 });
 // Short or Long, per video, whatever the channel's default (Settings → Videos)
@@ -1717,6 +1717,7 @@ const shapeFlag = shape => shape === "long" ? " --long" : " --short";
 const setShape = shape => { document.querySelectorAll("#shape button").forEach(b => b.classList.toggle("on", b.dataset.shape === shape)); setVtype(document.body.dataset.format); };
 const pickedShape = () => document.querySelector("#shape .on")?.dataset.shape || "short";
 $("#shape").onclick = e => { const b = e.target.closest("[data-shape]"); if (b) setShape(b.dataset.shape); };
+const briefFlags = (title, brief) => (title ? " --title " + quote(title) : "") + (brief ? " --brief " + quote(brief) : "");
 $("#makeNow").onclick = () => { const v = $("#input").value.trim(); exec("run" + shapeFlag(pickedShape()) + (v ? " " + quote(v) : "")).then(ok => ok && ($("#input").value = "")); };
 const LINK = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/;
 $("#saveIdea").onclick = () => {
@@ -2410,6 +2411,7 @@ function setVtype(t) {
   document.body.dataset.format = t || "";
   if (!setVtype.done && t) { setVtype.done = true; document.querySelectorAll("#shape button").forEach(b => b.classList.toggle("on", b.dataset.shape === defaultShape)); }  // each channel starts on its own default
   $("#input").placeholder = t === "clips" ? "Type what to search for (funny cats), or paste video links" : t === "quiz" ? "Name a topic to make a quiz on (the solar system)" : t === "guess" ? "Name a kind of thing to guess from pictures (famous landmarks)" : t === "onthisday" ? "Leave empty for today, or type a date (25 December)" : t === "top" ? "Name what to count down (tallest mountains on Earth)" : t === "word" ? "Leave empty for today's word, or type a word (petrichor)" : t === "essay" ? "Name an idea or a shower thought (why does time feel faster as we age?)" : "Ask a question, name a topic, paste a paragraph or a link";
+  if (t !== "clips") $("#input").placeholder += "\n\nOr take control:\nTitle: your exact title\nContext: angle, tone, who it's for, points to cover";
 }
 const SETTINGS_PAGES = {brand: ["Channel", "The name, look and words that go on every video."],
   content: ["Videos", "What this channel makes, what it's about, and how a video gets made."],

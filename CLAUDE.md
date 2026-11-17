@@ -67,7 +67,7 @@ Statuses: `queued` (idea) → `draft` (manual mode) → `rendered` (in Queue) �
 Non-Wikipedia rows use `sources.synthetic_id(key)` as pageid. Schema changes are additive `alter table` in `db()`.
 
 ## Pipeline (`make()` in rw.py)
-input → `add_input` routes it (link → article or idea list; >30 words → `text`; else → `question`) → research
+input → `add_input` takes out any `Title:` / `Context:` lines (`parse_brief()`; also Brief/Prompt/Description, and Idea/Topic for the subject; kept as JSON in the row's `brief`, or `run --title/--brief`), so the title is used exactly and the brief is added to every writing prompt (`briefed()`), then routes it (link → article or idea list; >30 words → `text`; else → `question`) → research
 (`research()`: Gemini or Claude web research if chosen in Connectors; else/fallback `research_web()`, which searches
 without a key (`sources.search_web()`: DuckDuckGo's plain page, Bing RSS as backup), reads up to four pages from
 different sites and uses their text as notes; Wikipedia via the local LLM is the last resort, or the only step when the
