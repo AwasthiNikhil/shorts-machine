@@ -642,8 +642,10 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
                 <label class="radio"><input type="radio" name="schPub" value="private"> Keep private (you publish it yourself)</label>
                 <label class="radio"><input type="radio" name="schPub" value="at"> Go public at <input type="time" id="schPubTime" aria-label="Publish time">
                   <span class="hint">the same day if the run starts before it, never sooner than 15 minutes after upload, so you can review it</span></label>
-                <label style="display:grid;gap:4px;margin-left:24px"><span class="hint">Send the review link to the contact form on this page (optional)</span>
-                  <input type="url" id="schReview" placeholder="https://yoursite.com/contact" aria-label="Contact page for review links"></label>
+                <label style="display:grid;gap:4px;margin-left:24px"><span class="hint">When it's uploaded, send the review link to (optional)</span>
+                  <span class="row" style="gap:6px"><input type="url" id="schReview" style="flex:1" placeholder="https://yoursite.com/contact or a webhook link" aria-label="Where to send review links">
+                  <button type="button" class="btn" id="schReviewTest">Send a test</button></span>
+                  <span class="hint">A page with a contact form (it's filled in and sent), a webhook from Discord, Slack, Google Chat, n8n, Zapier or Make, your own server (it gets JSON), or an ntfy topic for phone notifications.</span></label>
               </div>
               </div>
             </div>
@@ -2759,6 +2761,7 @@ function renderSchedule() {
   $("#pubStatus").innerHTML = mode === "after" ? (sch.enabled ? "Each video is published by the run that makes it" : "Off: turn on the making schedule above, or choose its own times")
     : status(mode === "times", nextRun(sch.publish_times || [], sch.publish_days || []), "publish");
 }
+$("#schReviewTest").onclick = () => { const u = $("#schReview").value.trim(); if (!/^https?:\/\/\S+\.\S+$/.test(u)) return termLine("! type a web link (https://…) first", "err"); exec("pingtest " + quote(u)); };
 function readSchedule() {
   const sch = S.schedule;
   sch.enabled = $("#schOn").checked;

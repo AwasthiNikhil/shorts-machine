@@ -4581,36 +4581,61 @@ def form_fields(page, html):
     return p.action, p.fields
 
 
-def ping_review(url, title, video_id, publish_at):
-    """Tell the owner a video is on YouTube, private, waiting to go public: fills in the contact form at `url` (name,
-    email, message; other fields as the page gives them, so hidden spam traps stay empty) and sends it."""
+def ping_review(url, title, video_id, publish_at=None):
+    """Tell the owner a video is on YouTube, private, waiting to go public, at the endpoint they chose (schedule
+    `review_url`). By what the link is:
+    - an ntfy topic (host has "ntfy"): the message as plain text, with a Title and a Click link;
+    - a webhook (path or host has "hook": Discord, Slack, Google Chat, Mattermost, n8n, Zapier, Make, your own server):
+      JSON with the message as "text" and "content" (what chat apps show) and the details as their own fields;
+    - any other web page: its first contact form is filled in (name, email, message, subject; hidden fields as the page
+      gives them, so spam traps stay empty) and sent, as a browser without JavaScript would; no form there: JSON as above.
+    No publish_at = a test message."""
     from datetime import datetime, timezone
-    when = datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone()
-    msg = (f"{BRAND['channel']}: a new video is uploaded and goes public at {when:%H:%M on %d %b}.\n\n{title}\n\n"
-           f"Review it: https://studio.youtube.com/video/{video_id}/edit\nWatch: https://youtu.be/{video_id}\n\n"
+    when = (datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone() if publish_at else None)
+    review, watch = f"https://studio.youtube.com/video/{video_id}/edit", f"https://youtu.be/{video_id}"
+    head = (f"{BRAND['channel']}: a new video is uploaded and goes public at {when:%H:%M on %d %b}." if when
+            else f"{BRAND['channel']}: a test from Shorts Machine. Review links will arrive like this.")
+    msg = (f"{head}\n\n{title}\n\nReview it: {review}\nWatch: {watch}\n\n"
            "To stop it, set it to private or delete it there before then. (Sent by Shorts Machine.)")
-    req = lambda u, data=None, ctype=None: urllib.request.Request(u, data=data, headers={"User-Agent": BRAND["user_agent"],
-                                                                                         **({"Content-Type": ctype} if ctype else {})})
-    action, fields = form_fields(url, urllib.request.urlopen(req(url), timeout=30).read().decode("utf-8", "replace"))
-    for k in fields:
-        low = k.lower()
-        if low in ("name", "your-name", "fullname", "full_name"):
-            fields[k] = f"Shorts Machine ({BRAND['channel']})"
-        elif "email" in low:
-            fields[k] = "shorts-machine@example.com"
-        elif low in ("message", "body", "comments", "comment", "your-message", "content"):
-            fields[k] = msg
-        elif low in ("subject", "topic"):
-            fields[k] = f"Ready to review: {title}"[:120]
-    if msg not in fields.values():
-        raise RuntimeError("that form has no message field")
-    import uuid
-    b = uuid.uuid4().hex
-    body = b"".join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items()) + f"--{b}--\r\n".encode()
-    with urllib.request.urlopen(req(action, body, f"multipart/form-data; boundary={b}"), timeout=30) as r:
-        said = r.read(400000).decode("utf-8", "replace")
-    if m := re.search(r'"status":"(error|fail\w*|invalid)"[^}]{0,200}', said):  # a form that answers "error" with a normal page
-        raise RuntimeError(f"the form refused it: {m[0][:160]}")
+    subject = f"Ready to review: {title}"[:120]
+    req = lambda u, data=None, ctype=None, **h: urllib.request.Request(u, data=data, headers={"User-Agent": BRAND["user_agent"],
+                                                                                              **({"Content-Type": ctype} if ctype else {}), **h})
+    def send(r, what):
+        with urllib.request.urlopen(r, timeout=30) as resp:
+            said = resp.read(400000).decode("utf-8", "replace")
+        if m := re.search(r'"status":"(error|fail\w*|invalid)"[^}]{0,200}', said):  # a form that answers "error" with a normal page
+            raise RuntimeError(f"the {what} refused it: {m[0][:160]}")
+        return what
+    parts = urllib.parse.urlsplit(url)
+    if "ntfy" in parts.netloc:
+        return send(req(url, msg.encode(), "text/plain; charset=utf-8", Title=subject.encode("ascii", "replace").decode(), Click=review), "ntfy topic")
+    payload = json.dumps(dict(text=msg, content=msg, title=subject, message=msg, channel=BRAND["channel"], video_title=title,
+                              video_id=video_id, review_url=review, watch_url=watch, public_at=publish_at, test=not publish_at)).encode()
+    if "hook" not in (parts.netloc + parts.path).lower():
+        try:
+            with urllib.request.urlopen(req(url), timeout=30) as resp:
+                page = resp.read(2000000).decode("utf-8", "replace") if "html" in resp.headers.get("Content-Type", "") else ""
+            action, fields = form_fields(url, page)
+        except Exception:
+            action = None  # not a page with a form: treat it as an endpoint
+        if action:
+            for k in fields:
+                low = k.lower()
+                if low in ("name", "your-name", "fullname", "full_name"):
+                    fields[k] = f"Shorts Machine ({BRAND['channel']})"
+                elif "email" in low:
+                    fields[k] = "shorts-machine@example.com"
+                elif low in ("message", "body", "comments", "comment", "your-message", "content", "text"):
+                    fields[k] = msg
+                elif low in ("subject", "topic", "title"):
+                    fields[k] = subject
+            if msg not in fields.values():
+                raise RuntimeError("the form on that page has no message field")
+            import uuid
+            b = uuid.uuid4().hex
+            body = b"".join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items()) + f"--{b}--\r\n".encode()
+            return send(req(action, body, f"multipart/form-data; boundary={b}"), "contact form")
+    return send(req(url, payload, "application/json"), "webhook")
 
 
 def auto(con, dry_run=False):
@@ -5073,8 +5098,7 @@ def upload(con, pageid, publish_at=None, public=False):
                 upsert(con, pageid, video_id=vid)
                 if publish_at and (url := schedule_settings().get("review_url")):
                     try:
-                        ping_review(url, m["title"], vid, publish_at)
-                        where += f"; review link sent to {urllib.parse.urlsplit(url).netloc}"
+                        where += f"; review link sent ({ping_review(url, m['title'], vid, publish_at)}, {urllib.parse.urlsplit(url).netloc})"
                     except Exception as e:  # never costs the upload
                         where += f"; couldn't send the review link ({e})"
             else:
@@ -5252,6 +5276,8 @@ def main():
     cl = sub.add_parser("clips", help="a countdown of clips: words to search YouTube for, and/or links from any site")
     cl.add_argument("items", nargs="+"); cl.add_argument("--count", type=int, default=5, choices=range(2, 11))
     au = sub.add_parser("auto"); au.add_argument("--dry-run", action="store_true")
+    pt = sub.add_parser("pingtest", help="send a test review message to a link (none = the channel's saved one)")
+    pt.add_argument("url", nargs="?")
     pn = sub.add_parser("publishnext", help="publish the top of the Queue now, public (what the publishing schedule runs)")
     pn.add_argument("--dry-run", action="store_true")
     sub.add_parser("schedule")
@@ -5320,6 +5346,16 @@ def main():
         print(dict(con.execute("select status, count(*) from pages group by status").fetchall()))
     elif args.cmd == "auto":
         auto(con, args.dry_run)
+    elif args.cmd == "pingtest":
+        url = args.url or schedule_settings().get("review_url")
+        if not url:
+            raise SystemExit("no review link: type one in Settings → Schedule")
+        last = con.execute("select title, video_id from pages where video_id is not null order by updated desc limit 1").fetchone()
+        try:
+            print(f"sent a test to the {ping_review(url, last['title'] if last else 'Your next video', last['video_id'] if last else 'VIDEO_ID')} "
+                  f"at {urllib.parse.urlsplit(url).netloc}")
+        except Exception as e:
+            raise SystemExit(f"couldn't send to {url}: {e}")
     elif args.cmd == "publishnext":
         publish_next(con, args.dry_run)
     elif args.cmd == "schedule":
