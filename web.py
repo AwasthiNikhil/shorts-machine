@@ -127,10 +127,13 @@ def save_brand(new):
         raise ValueError("unknown automation option")
     if sch["fallback"] in ("arxiv", "rss", "link") and not str(sch.get("fallback_arg", "")).strip():
         raise ValueError(f"{sch['fallback']} needs {'a topic' if sch['fallback'] == 'arxiv' else 'a link'}")
+    review = str(sch.get("review_url") or "").strip()
+    if review and not re.match(r"^https?://[^\s/]+\.[^\s]+$", review):
+        raise ValueError("the review page must be a web link (https://…)")
     b["schedule"] = {"enabled": bool(sch.get("enabled")), "times": times, "days": days, "upload": bool(sch.get("upload")),
                      "publish": sch["publish"], "publish_time": sch["publish_time"], "fallback": sch["fallback"],
                      "fallback_arg": str(sch.get("fallback_arg", "")).strip()[:300], "pick": sch.get("pick", "order"),
-                     "publish_mode": mode, "publish_times": ptimes, "publish_days": pdays}
+                     "publish_mode": mode, "publish_times": ptimes, "publish_days": pdays, "review_url": review[:300]}
     if "prompts" in new:
         b["prompts"] = clean_prompts(new["prompts"])
     BRAND_FILE.write_text(json.dumps(b, indent=2) + "\n")

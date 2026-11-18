@@ -4543,14 +4543,74 @@ def publish_next(con, dry_run=False):
     print("=== done")
 
 
-def publish_time_utc(hhmm, min_gap_hours=2):
-    """Next local HH:MM at least `min_gap_hours` from now (time to review), as YouTube's UTC timestamp."""
+REVIEW_MINUTES = 15  # the least time between upload and going public, to look it over
+
+
+def publish_time_utc(hhmm, since=None):
+    """When a video goes public, as YouTube's UTC timestamp: HH:MM on the day of `since` (the run's start; now if
+    not given), the next day if the run started after it; never sooner than REVIEW_MINUTES from now. So a run at 11:56
+    whose video is uploaded at 12:25 goes public at 12:40 today, not at 12:30 tomorrow."""
     from datetime import datetime, timedelta, timezone
     now = datetime.now().astimezone()
-    t = now.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]), second=0, microsecond=0)
-    while t < now + timedelta(hours=min_gap_hours):
+    since = (since or now).astimezone()
+    t = since.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:]), second=0, microsecond=0)
+    if t < since:
         t += timedelta(days=1)
+    t = max(t, (now + timedelta(minutes=REVIEW_MINUTES)).replace(second=0, microsecond=0) + timedelta(minutes=1))
     return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def form_fields(page, html):
+    """The first POST form on a page -> (where it posts, its fields as {name: value}), as a browser would send it."""
+    from html.parser import HTMLParser
+    class P(HTMLParser):
+        action, fields, inside, done, area = None, {}, False, False, None
+        def handle_starttag(self, tag, a):
+            a = dict(a)
+            if tag == "form" and not self.done and (a.get("method") or "").upper() == "POST":
+                self.inside, self.action = True, urllib.parse.urljoin(page, a.get("action") or page)
+            elif self.inside and tag in ("input", "textarea", "select") and a.get("name"):
+                self.fields[a["name"]] = a.get("value") or ""
+        def handle_endtag(self, tag):
+            if tag == "form" and self.inside:
+                self.inside, self.done = False, True
+    p = P()
+    p.feed(html)
+    if not p.action:
+        raise RuntimeError("no form to send to on that page")
+    return p.action, p.fields
+
+
+def ping_review(url, title, video_id, publish_at):
+    """Tell the owner a video is on YouTube, private, waiting to go public: fills in the contact form at `url` (name,
+    email, message; other fields as the page gives them, so hidden spam traps stay empty) and sends it."""
+    from datetime import datetime, timezone
+    when = datetime.strptime(publish_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone()
+    msg = (f"{BRAND['channel']}: a new video is uploaded and goes public at {when:%H:%M on %d %b}.\n\n{title}\n\n"
+           f"Review it: https://studio.youtube.com/video/{video_id}/edit\nWatch: https://youtu.be/{video_id}\n\n"
+           "To stop it, set it to private or delete it there before then. (Sent by Shorts Machine.)")
+    req = lambda u, data=None, ctype=None: urllib.request.Request(u, data=data, headers={"User-Agent": BRAND["user_agent"],
+                                                                                         **({"Content-Type": ctype} if ctype else {})})
+    action, fields = form_fields(url, urllib.request.urlopen(req(url), timeout=30).read().decode("utf-8", "replace"))
+    for k in fields:
+        low = k.lower()
+        if low in ("name", "your-name", "fullname", "full_name"):
+            fields[k] = f"Shorts Machine ({BRAND['channel']})"
+        elif "email" in low:
+            fields[k] = "shorts-machine@example.com"
+        elif low in ("message", "body", "comments", "comment", "your-message", "content"):
+            fields[k] = msg
+        elif low in ("subject", "topic"):
+            fields[k] = f"Ready to review: {title}"[:120]
+    if msg not in fields.values():
+        raise RuntimeError("that form has no message field")
+    import uuid
+    b = uuid.uuid4().hex
+    body = b"".join(f'--{b}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items()) + f"--{b}--\r\n".encode()
+    with urllib.request.urlopen(req(action, body, f"multipart/form-data; boundary={b}"), timeout=30) as r:
+        said = r.read(400000).decode("utf-8", "replace")
+    if m := re.search(r'"status":"(error|fail\w*|invalid)"[^}]{0,200}', said):  # a form that answers "error" with a normal page
+        raise RuntimeError(f"the form refused it: {m[0][:160]}")
 
 
 def auto(con, dry_run=False):
@@ -4568,7 +4628,10 @@ def auto(con, dry_run=False):
     print(f"=== automated run {time.strftime('%Y-%m-%d %H:%M')}" + (" (dry run)" if dry_run else ""))
     try:
         row = con.execute(f"select pageid, title from pages where status='queued' {QUEUE_ORDER} limit 1").fetchone()
-        when = publish_time_utc(sch["publish_time"]) if sch["publish"] == "at" else None
+        started = time.time()
+        from datetime import datetime
+        public_at = lambda: publish_time_utc(sch["publish_time"], datetime.fromtimestamp(started)) if sch["publish"] == "at" else None
+        when = public_at()  # an estimate for the plan; worked out again at upload
         plan = (f"make: {row['title']}" if row else f"queue empty: find 1 idea in {sch['fallback_arg']}" if sch["fallback_arg"]
                 else f"queue empty: find 1 new idea ({BRAND.get('idea_source') or 'mix'} of {', '.join(channel_topics())})")
         ready = con.execute(f"select ep, title from pages where status='rendered' {UPLOAD_ORDER} limit 1").fetchone()
@@ -4596,7 +4659,7 @@ def auto(con, dry_run=False):
         if sch["upload"] and not separate_publishing(sch):
             pick = (f"select ep from pages where status='rendered' {UPLOAD_ORDER} limit 1" if sch["pick"] == "order"
                     else f"select ep from pages where pageid={int(pid)}")
-            upload_pending(con, when, con.execute(pick).fetchone()["ep"])
+            upload_pending(con, public_at(), con.execute(pick).fetchone()["ep"])
         print("=== done")
     except BaseException as e:
         notify(f"Automated run failed: {e}")
@@ -5008,6 +5071,12 @@ def upload(con, pageid, publish_at=None, public=False):
             if p == "youtube":
                 vid, where = upload_youtube(row, m, publish_at, public)
                 upsert(con, pageid, video_id=vid)
+                if publish_at and (url := schedule_settings().get("review_url")):
+                    try:
+                        ping_review(url, m["title"], vid, publish_at)
+                        where += f"; review link sent to {urllib.parse.urlsplit(url).netloc}"
+                    except Exception as e:  # never costs the upload
+                        where += f"; couldn't send the review link ({e})"
             else:
                 posts[p] = {"id": "", "url": "", **{"youtube": None, "facebook": post_facebook, "instagram": post_instagram,
                                                      "tiktok": post_tiktok}[p](row["video_path"], m)}
@@ -5097,8 +5166,15 @@ def selftest():
     sources.selftest()
     from datetime import datetime, timezone
     when = datetime.strptime(publish_time_utc("15:00"), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    assert 2 * 3600 <= (when - datetime.now(timezone.utc)).total_seconds() <= 26 * 3600 + 60
-    assert when.astimezone().strftime("%H:%M") == "15:00"
+    assert REVIEW_MINUTES * 60 <= (when - datetime.now(timezone.utc)).total_seconds() <= 24 * 3600 + 60
+    from datetime import timedelta
+    run = datetime.now().astimezone().replace(hour=11, minute=56)
+    soon = datetime.strptime(publish_time_utc("12:30", run), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone()
+    assert soon.date() == run.date() or soon - datetime.now().astimezone() < timedelta(minutes=REVIEW_MINUTES + 2), soon  # same day, not tomorrow
+    act, f = form_fields("https://x.test/contact", '<form method="GET"><input name="q"></form><form method="POST" action="">'
+                         '<input type="hidden" name="$K" value="1"><input name="name"><textarea name="message"></textarea>'
+                         '<input name="website" value=""></form>')
+    assert act == "https://x.test/contact" and f == {"$K": "1", "name": "", "message": "", "website": ""}, (act, f)
     for k in PROMPTS:  # every editable prompt splits into instructions + a fixed part that still asks for JSON
         head, tail = prompt_parts(k)
         assert head and "Reply as JSON" in tail and "{" not in head.replace("{answer}", "").replace("{topics}", ""), k

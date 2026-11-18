@@ -641,7 +641,9 @@ body[data-vtype=clips] [data-for=explainer], body[data-vtype=explainer] [data-fo
                 <span class="hint">On YouTube</span>
                 <label class="radio"><input type="radio" name="schPub" value="private"> Keep private (you publish it yourself)</label>
                 <label class="radio"><input type="radio" name="schPub" value="at"> Go public at <input type="time" id="schPubTime" aria-label="Publish time">
-                  <span class="hint">next time at least 2 h after it's made, so you can review it</span></label>
+                  <span class="hint">the same day if the run starts before it, never sooner than 15 minutes after upload, so you can review it</span></label>
+                <label style="display:grid;gap:4px;margin-left:24px"><span class="hint">Send the review link to the contact form on this page (optional)</span>
+                  <input type="url" id="schReview" placeholder="https://yoursite.com/contact" aria-label="Contact page for review links"></label>
               </div>
               </div>
             </div>
@@ -2749,6 +2751,7 @@ function renderSchedule() {
   document.querySelectorAll("[name=schPick]").forEach(r => r.checked = r.value === (sch.pick || "order"));
   document.querySelectorAll("[name=schPub]").forEach(r => r.checked = r.value === sch.publish);
   $("#schPubTime").value = sch.publish_time;
+  $("#schReview").value = sch.review_url || "";
   const changed = JSON.stringify(sch) !== savedSchedule;
   const status = (on, next, what) => !on ? "Off" : changed ? `<span class="dirty">Not active yet: click Save to install the schedule</span>` :
     schLoaded ? `<b style="color:var(--ok)">Active</b> · next ${what} ${whenText(next)}` : `<span style="color:var(--bad)">Saved but the launchd job isn't loaded: click Save again</span>`;
@@ -2769,6 +2772,7 @@ function readSchedule() {
   sch.publish = document.querySelector("[name=schPub]:checked")?.value || "private";
   sch.pick = document.querySelector("[name=schPick]:checked")?.value || "order";
   sch.publish_time = $("#schPubTime").value || "15:00";
+  sch.review_url = $("#schReview").value.trim();
 }
 $("#sform").addEventListener("change", e => { if (e.target.closest("[data-group=automation]")) { readSchedule(); renderSchedule(); setDirty(true); } });
 $("#sform").addEventListener("click", e => {
