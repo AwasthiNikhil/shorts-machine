@@ -4370,6 +4370,68 @@ FORMATS = {"quiz": (make_quiz, "quiz", quiz_steps, render_quiz, 3),
            "essay": (make_essay, "items", essay_steps, render_essay, 3)}
 
 
+SHORTS_FROM = ("quiz", "guess", "onthisday")  # kinds whose parts stand on their own, in any order
+
+
+def shorts_from(con, ep, limit=None):
+    """Vertical Shorts from a long video of this channel: its questions (pictures, events) shared out in order, as many
+    to a Short as fit the channel's Short length, each Short laid out and voiced for the phone (not a crop of the
+    widescreen one). Each is a new video in the Queue; its description links the long one once that is on YouTube.
+    -> the new pageids"""
+    import copy, math, shutil
+    row = con.execute("select * from pages where ep=?", (ep,)).fetchone()
+    if not row:
+        raise SystemExit(f"no episode {ep}")
+    m = json.loads((WORK / str(row["pageid"]) / "meta.json").read_text())
+    if m.get("origin") not in SHORTS_FROM:
+        raise SystemExit(f"Shorts can be made from quizzes, guess-the-picture and on-this-day videos, not {m.get('origin') or 'explainers'}"
+                         " (cut an explainer in the editor instead)")
+    if m.get("shape") != "long":
+        raise SystemExit(f"EP {ep:03d} is already a Short")
+    key, least = FORMATS[m["origin"]][1], FORMATS[m["origin"]][4]
+    parts = m[key]
+    took = video_seconds(row["video_path"]) if row["video_path"] and Path(row["video_path"]).exists() else 12 * len(parts)
+    each = max(1.0, (took - 10) / max(1, len(parts)))  # seconds a part takes, intro and outro aside
+    per = max(least, int((BRAND["max_seconds"] - 14) // each))  # room for the intro, outro and a slower part
+    n = math.ceil(len(parts) / per)
+    groups = [parts[k * len(parts) // n:(k + 1) * len(parts) // n] for k in range(n)]  # even shares, in order
+    groups = [g for g in groups if len(g) >= least]
+    if not groups:
+        raise SystemExit(f"EP {ep:03d} has too few parts for a Short")
+    print(f"EP {ep:03d}: {len(parts)} parts → {len(groups)} Shorts of {', '.join(str(len(g)) for g in groups)}"
+          + (f"; making the first {limit}" if limit and limit < len(groups) else ""))
+    groups = groups[:limit or None]
+    made = []
+    for k, g in enumerate(groups, 1):
+        before = dict(ai_used)
+        pid, new_ep, work = new_video(con, f"short-of:{row['pageid']}:{k}")
+        s = copy.deepcopy(m)
+        for x in ("narration", "yt_description", "potential", "ai", "gemini", "stale"):
+            s.pop(x, None)
+        s.update(ep=new_ep, pageid=pid, shape="short", from_long=dict(pageid=row["pageid"], ep=ep),
+                 title=f"{m['title'].rstrip()} · Part {k}"[:100], **{key: copy.deepcopy(g)})
+        for i in s[key]:  # pictures go with their part
+            if (img := i.get("image")) and Path(img["path"]).exists():
+                shutil.copy(img["path"], work / Path(img["path"]).name)
+                img["path"] = str(work / Path(img["path"]).name)
+        set_shape(False)
+        made.append(make_format(con, s, f"Short {k} of EP {ep:03d}", before))
+    return made
+
+
+def full_video_line(m):
+    """'Full video: https://youtu.be/…' for a Short made from a long video that is on YouTube now, else ''."""
+    src = (m.get("from_long") or {}).get("pageid")
+    row = src and db_row(src)
+    return f"Full video: https://youtu.be/{row['video_id']}" if row and row["video_id"] else ""
+
+
+def db_row(pageid):
+    con = sqlite3.connect(DB)
+    con.row_factory = sqlite3.Row
+    return con.execute("select * from pages where pageid=?", (pageid,)).fetchone()
+
+
 def copy_to(con, ep, to):
     """Copy a video to another channel: same script and pictures (or clips), made again there with that channel's
     brand, voice and closing line. The work is done by `copyfrom` running as that channel."""
@@ -4744,17 +4806,19 @@ def rerender(con, ep, repick_images=False, narration=None):
 
 YT_UPLOAD = "https://www.googleapis.com/auth/youtube.upload"
 YT_MANAGE = "https://www.googleapis.com/auth/youtube.force-ssl"  # needed to delete videos
+YT_READ = "https://www.googleapis.com/auth/youtube.readonly"  # to see which channel the sign-in chose
+YT_CHANNEL = WS_SECRETS / "youtube_channel.json"  # {id, title, handle}: the YouTube channel this studio channel uploads to
 
 
-def youtube(scope):
-    """Authorised YouTube client. Asks Google for consent (browser) only if the saved token lacks `scope`."""
+def youtube(*scopes):
+    """Authorised YouTube client. Asks Google for consent (browser) only if the saved token lacks one of `scopes`."""
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
     tok = WS_SECRETS / "token.json"
     creds = Credentials.from_authorized_user_file(tok) if tok.exists() else None
-    if creds and not creds.has_scopes([scope]):
+    if creds and not creds.has_scopes(list(scopes)):
         print("  YouTube needs an extra permission; a browser window will ask you to allow it")
         creds = None
     if creds and creds.expired and creds.refresh_token:
@@ -4764,9 +4828,54 @@ def youtube(scope):
         if not cs.exists():
             raise SystemExit("YouTube isn't set up: in the studio, Settings → YouTube, add your client file and click Connect")
         had = json.loads(tok.read_text()).get("scopes", []) if tok.exists() else []
-        creds = InstalledAppFlow.from_client_secrets_file(cs, sorted({*had, scope})).run_local_server(port=0)
+        creds = InstalledAppFlow.from_client_secrets_file(cs, sorted({*had, *scopes})).run_local_server(port=0)
     tok.write_text(creds.to_json())
     return build("youtube", "v3", credentials=creds)
+
+
+def youtube_connect():
+    """Sign in afresh (so Reconnect can pick another channel) and say which YouTube channel uploads will go to."""
+    for f in (WS_SECRETS / "token.json", YT_CHANNEL):
+        f.unlink(missing_ok=True)
+    youtube(YT_UPLOAD, YT_READ)
+    ch = youtube_channel()
+    print(f"connected: uploads go to the YouTube channel \"{ch['title']}\"" + (f" ({ch['handle']})" if ch.get("handle") else "")
+          if ch else "connected (couldn't read the channel's name)")
+
+
+def youtube_channel():
+    """{id, title, handle} of the YouTube channel this studio channel is signed in to, or {} if it isn't known: read
+    once from YouTube when the sign-in allows it (signed in before this existed = only after Reconnect or the first
+    upload, which also names it) and kept in YT_CHANNEL."""
+    if YT_CHANNEL.exists():
+        return json.loads(YT_CHANNEL.read_text())
+    tok = WS_SECRETS / "token.json"
+    if not tok.exists() or not {YT_READ, YT_MANAGE} & set(json.loads(tok.read_text()).get("scopes", [])):
+        return {}
+    try:
+        items = youtube(YT_UPLOAD).channels().list(part="snippet", mine=True).execute().get("items") or []
+    except Exception:
+        return {}
+    if not items:
+        return {}
+    s = items[0]["snippet"]
+    ch = dict(id=items[0]["id"], title=s.get("title", ""), handle=s.get("customUrl", ""))
+    YT_CHANNEL.write_text(json.dumps(ch))
+    return ch
+
+
+def youtube_shared(ch):
+    """Other studio channels signed in to the same YouTube channel (so their uploads would land together)."""
+    out = []
+    for ws in [ROOT] + sorted((ROOT / "workspaces").glob("*/")):
+        f, b = ws / "secrets" / "youtube_channel.json", ws / "brand.json"
+        if ws.resolve() != WS.resolve() and f.exists() and b.exists() and (ws / "secrets" / "token.json").exists():
+            try:
+                if json.loads(f.read_text()).get("id") == ch.get("id"):
+                    out.append(json.loads(b.read_text()).get("channel") or ws.name)
+            except ValueError:
+                pass
+    return out
 
 
 def youtube_status():
@@ -4804,6 +4913,7 @@ def youtube_disconnect():
         except OSError:
             pass  # already revoked or offline: forgetting it locally is what matters
         tok.unlink()
+    YT_CHANNEL.unlink(missing_ok=True)
 
 
 def delete_local(con, pageid, reason):
@@ -5045,7 +5155,8 @@ def tiktok_disconnect():
 def publish_status():
     """What each platform needs: 'none' (set up), 'client' (connect) or 'connected'."""
     meta, tt = secret(META_FILE), secret(TIKTOK_FILE)
-    return {"youtube": youtube_status(), "facebook": "connected" if meta.get("page_id") else "none",
+    yt = youtube_channel() if youtube_status() == "connected" else {}
+    return {"youtube": youtube_status(), "youtube_channel": yt, "youtube_shared": youtube_shared(yt) if yt else [], "facebook": "connected" if meta.get("page_id") else "none",
             "instagram": "connected" if meta.get("ig_id") else "none",
             "tiktok": "connected" if tt.get("refresh_token") else "client" if tt.get("client_key") else "none",
             "meta": {k: meta.get(k, "") for k in ("page_name", "ig_user")}, "tiktok_user": tt.get("user", "")}
@@ -5075,6 +5186,8 @@ def upload_youtube(row, m, publish_at, public=False):
     resp = None
     while resp is None:
         _, resp = req.next_chunk()
+    if not YT_CHANNEL.exists() and (sn := resp.get("snippet") or {}).get("channelId"):  # now we know where uploads go
+        YT_CHANNEL.write_text(json.dumps(dict(id=sn["channelId"], title=sn.get("channelTitle", ""), handle="")))
     return resp["id"], f"https://youtube.com/{'watch?v=' if m.get("shape") == "long" else 'shorts/'}{resp['id']} ({status['privacyStatus']})"
 
 
@@ -5085,6 +5198,9 @@ def upload(con, pageid, publish_at=None, public=False):
     if not row or row["status"] != "rendered":
         raise SystemExit(f"page {pageid} is not in 'rendered' state")
     m = json.loads((WORK / str(pageid) / "meta.json").read_text())
+    if (line := full_video_line(m)) and line not in m["yt_description"]:  # a Short of a long video that is up now
+        m["yt_description"] = f"{line}\n\n{m['yt_description']}"
+        (WORK / str(pageid) / "meta.json").write_text(json.dumps(m, indent=2))
     if bad := description_problems(m["yt_description"]):  # checked once, for every platform
         raise SystemExit(f"EP {row['ep']:03d} not published: its description has {bad[0]}. Re-render the video to rewrite the description.")
     posts = json.loads(row["posts"] or "{}")
@@ -5297,6 +5413,8 @@ def main():
     dl = sub.add_parser("download", help="save videos, audio or images from almost any site into media/ (references, clips)")
     dl.add_argument("urls", nargs="+"); dl.add_argument("--section", help="only part of it, e.g. 1:20-1:45")
     dl.add_argument("--kind", choices=MEDIA_KINDS, default="video", help="video (default), audio only, or an image")
+    sf = sub.add_parser("shortsfrom", help="make vertical Shorts from a long quiz, guess or on-this-day video")
+    sf.add_argument("--ep", type=int, required=True); sf.add_argument("--limit", type=int, help="make only the first N")
     cn = sub.add_parser("connect", help="sign in to YouTube or TikTok (opens the browser)")
     cn.add_argument("platform", nargs="?", default="youtube", choices=["youtube", "tiktok"])
     sc = sub.add_parser("score"); sc.add_argument("--all", action="store_true")
@@ -5323,7 +5441,7 @@ def main():
     if args.cmd == "connect" and args.platform == "tiktok":
         return tiktok_connect()
     if args.cmd == "connect":
-        youtube(YT_UPLOAD)
+        youtube_connect()
         return print("YouTube connected. Uploads will go to the channel you chose.")
     if args.cmd == "download":
         failed = 0
@@ -5396,6 +5514,8 @@ def main():
         image_model_setup()
     elif args.cmd == "copyto":
         copy_to(con, args.ep, args.to)
+    elif args.cmd == "shortsfrom":
+        shorts_from(con, args.ep, args.limit)
     elif args.cmd == "copyfrom":
         copy_from(con, args.channel, args.pageid)
     elif args.cmd == "pull":

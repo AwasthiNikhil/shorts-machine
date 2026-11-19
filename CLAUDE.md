@@ -56,6 +56,14 @@ platform in `publish_to`) and `auto` doesn't upload. `publish_mode: "after"` kee
 The studio shows one channel: `POST /api/workspace` (`switch_workspace()` in web.py) writes `data/active_workspace`
 and re-execs the server, refusing while a job runs; `rw web` starts on the remembered channel. Scheduled runs of
 different channels queue on `data/render.lock`. To test, make a throwaway channel folder and delete it after.
+YouTube: one OAuth client (`secrets/client_secret.json`, shared) and a sign-in per channel (`WS_SECRETS/token.json`);
+any Google account can sign in. `connect` (`youtube_connect()`) always signs in afresh with upload + readonly scopes and
+saves which YouTube channel it chose in `WS_SECRETS/youtube_channel.json` (`youtube_channel()`; also learnt from the
+first upload's response); Connectors shows it, and `youtube_shared()` warns when two studio channels upload to the same one.
+Shorts from a long video: `./rw shortsfrom --ep N [--limit K]` (`shorts_from()`, the "Make Shorts from this" button) for
+quiz/guess/onthisday (`SHORTS_FROM`): the parts are shared out in order, as many per Short as fit `max_seconds`, each
+made as a new vertical video (meta `from_long`); `upload()` puts "Full video: <link>" first in its description once
+the long one has a `video_id` (`full_video_line()`).
 A video can be copied to another channel (`./rw copyto --ep N --to <slug>`, the "Copy to channel" button): `copy_to()`
 starts `copyfrom` as the target channel, where `copy_from()` copies the script and pictures (or clip list) into its
 own `work/`, gives it the next episode number and makes it with that channel's brand and voice.

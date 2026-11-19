@@ -10,7 +10,7 @@ from pathlib import Path
 import rw
 
 ALLOWED = {"run", "add", "download", "connect", "discover", "upload", "unpublish", "rerender", "log", "score", "selftest", "preview", "voicetest",
-           "auto", "publishnext", "pingtest", "schedule", "clips", "clipadd", "pull", "imagemodel", "copyto"}
+           "auto", "publishnext", "pingtest", "schedule", "clips", "clipadd", "pull", "imagemodel", "copyto", "shortsfrom"}
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 BRAND_FILE = rw.BRAND_FILE
 HEX = re.compile(r"^#[0-9a-fA-F]{6}$")

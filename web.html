@@ -1448,6 +1448,7 @@ async function openDetail(id) {
       <div class="btns">
         ${p.status === "rendered" ? `<button class="btn primary" data-upload="${p.ep}">Publish</button>` : ""}
         ${p.video && p.origin !== "clips" ? `<button class="btn" data-cutcopy="${p.pageid}" title="Opens a copy of this video on a timeline: split it, cut parts out, move them, add sound and text. This video stays as it is.">Cut in the editor</button>` : ""}
+        ${p.video && p.shape === "long" && ["quiz", "guess", "onthisday"].includes(p.origin) ? `<button class="btn" data-shortsfrom="${p.ep}" title="Shares this video's parts out into vertical Shorts, as many to each as fit your Short length, laid out for the phone. Each goes to the Queue, and its description links this video once it's on YouTube.">Make Shorts from this</button>` : ""}
         ${p.status !== "uploaded" ? `<button class="btn" data-remake="${esc(makeArg(p))}" data-shape-of="${p.shape || "short"}" data-title="${esc(p.fixed_title || "")}" data-brief="${esc(p.brief || "")}">Remake</button>` : ""}
         ${["rendered", "queued", "failed"].includes(p.status) ? `<button class="btn danger" data-skip="${p.pageid}">Skip (don't upload)</button>` : ""}
         ${p.ep && p.status !== "uploaded" ? `<span id="delVidBox"><button class="btn danger" data-delvid="${p.pageid}">Delete video</button></span>` : ""}
@@ -1713,6 +1714,7 @@ document.addEventListener("click", async e => {
       && await post("/api/images", {pageid: pid, images: edImages, audio: {music: $("#sndMusic").value, music_volume: +$("#sndVol").value}});
     if (ok) { dlg.close(); exec(`rerender --ep ${+t.dataset.ep}`); } else { t.disabled = false; t.textContent = "Try again"; }
   }
+  else if (t.dataset.shortsfrom) { dlg.close(); exec(`shortsfrom --ep ${t.dataset.shortsfrom}`); }
   else if (t.dataset.remake) { dlg.close(); exec(`run --force${shapeFlag(t.dataset.shapeOf)}${briefFlags(t.dataset.title, t.dataset.brief)} ${quote(t.dataset.remake)}`); }
   else if (t.dataset.skip) { if (await post("/api/skip", {pageid: +t.dataset.skip})) { if (dlg.open) dlg.close(); termLine("removed/skipped page " + t.dataset.skip); loadPages(); } }
 });
@@ -2616,7 +2618,9 @@ function renderConnectors(j) {
   STATE($("#ytState"), {none: "Not set up", client: "Not connected", connected: "Connected"}[pub.youtube], {client: "warn", connected: "ok"}[pub.youtube]);
   $("#ytStatus").innerHTML = {none: "Add your OAuth client file (steps below).",
     client: "Client file added. Click <b>Connect YouTube</b> and sign in with the account that owns your channel.",
-    connected: "Uploads go to the channel you chose when signing in."}[pub.youtube];
+    connected: (ch => ch.id ? `Uploads go to <a href="https://www.youtube.com/channel/${esc(ch.id)}" target="_blank" rel="noopener"><b>${esc(ch.title)}</b>${ch.handle ? " " + esc(ch.handle) : ""} ↗</a>.`
+      + (pub.youtube_shared?.length ? ` <span style="color:var(--bad)">${esc(pub.youtube_shared.join(", "))} ${pub.youtube_shared.length > 1 ? "are" : "is"} signed in to this YouTube channel too, so both upload there. To use another one, click <b>Reconnect</b> and pick it.</span>` : "")
+      : "Connected, but not yet known to which YouTube channel. Click <b>Reconnect</b> to see it (it's also found on the first upload).")(pub.youtube_channel || {})}[pub.youtube];
   $("#ytHelp").open = pub.youtube === "none";
   $("#ytConnect").hidden = pub.youtube === "none"; $("#ytConnect").textContent = pub.youtube === "connected" ? "Reconnect" : "Connect YouTube";
   $("#ytOff").hidden = pub.youtube !== "connected";
